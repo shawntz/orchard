@@ -1,0 +1,299 @@
+TextEdit
+:brain: Literature-Search Terms and Queries BrainstormGeneral Pupil Terms: 
+
+Measurement 
+	pupillometry, pupillometric, cognitive pupillometry, pupil size, pupil diameter, pupil area
+
+Changes in Pupil Size
+	pupil dilation, pupillary dilation, pupil dilatation, pupillary response, pupil response, pupil constriction
+
+Task
+	task-evoked pupil response, task-evoked pupillary response, event-related pupil response, stimulus-evoked pupil dilation, phasic pupil response
+
+Baseline and ongoing Activity 
+	tonic pupil size, baseline pupil diameter, prestimulus pupil size, pre-stimulus pupil, spontaneous pupil fluctuations, pupil dynamics
+
+Mechanistic framing 
+	pupil-linked arousal, pupil-linked neuromodulation, locus coeruleus, noradrenergic, norepinephrine, adaptive gain
+
+Broader acquisition terminology
+	eye tracking, eye-tracking, eyetracking, oculometry (combined with pupil or pupillometry)
+
+
+* Resuable Boolean: 
+    * (pupillometr* OR "pupil size" OR "pupil diameter" OR "pupil area" OR "pupil dilation" OR "pupillary dilation" OR "pupil dilatation" OR "pupil response" OR "pupillary response" OR "pupil-linked arousal")
+    * To cast a wide but targeted net across academic databases (e.g., PubMed, Scopus, Web of Science), use a three-pillar Boolean string: [Pupillometry terms] AND [Cognitive domains] AND [Open-data indicators].
+        * Pupillometry Modifiers: ("pupillometry" OR  "pupil size" OR "pupillary response" OR "pupil  dilation" OR "task-evoked pupillary response" OR  "TEPR" OR "pupil dynamics")
+        * Open-Data Identifiers: ("open data" OR  "dataset" OR "raw data available" OR "OSF"  OR "OpenNeuro" OR "Zenodo" OR "GitHub" OR  "data sharing")
+
+
+
+Broader Searches: Memory, Attention
+
+* can possibly combine these with the pupil block 
+
+Working and short-term memory
+	working memory; short-term memory; memory load; memory capacity; digit span; operation span; complex span; n-back; Sternberg; change detection; delayed recall; delayed estimation; maintenance; updating; retro-cue
+
+Episodic and recognition memory
+	episodic memory; encoding; retrieval; recognition; recollection; familiarity; old/new effect; subsequent memory; associative memory; source memory; free recall; cued recall; retrieval effort; forgetting; mnemonic interference
+
+
+Temporal and event memory
+	event boundary; event segmentation; temporal order memory; temporal context; temporal organization; sequence memory; context shift
+
+Sustained attention and mind wandering
+	sustained attention; vigilance; attentional lapse; attention lapse; mind wandering; task-unrelated thought; off-task thought; sustained attention to response task; SART; gradual-onset continuous performance task; gradCPT; psychomotor vigilance
+
+Selective, spatial, and temporal attention
+	selective attention; covert attention; spatial attention; attentional orienting; visual search; distractor processing; attentional capture; Posner cueing; attentional blink; rapid serial visual presentation; RSVP
+
+Emotion and affect
+	emotion; affect; emotional arousal; valence; emotional reactivity; affective pictures; emotional words; emotional faces; pleasant/unpleasant stimuli; IAPS; IADS; emotion regulation; reappraisal; suppression
+
+Threat and fear learning
+	threat anticipation; fear conditioning; aversive learning; extinction; safety learning; conditioned stimulus; threat of shock; emotional memory
+
+Cognitive control
+	cognitive control; executive function; inhibition; response inhibition; conflict monitoring; interference; Stroop; flanker; Simon task; go/no-go; stop-signal; antisaccade; task switching
+
+Mental effort and workload 
+	mental effort; cognitive effort; cognitive load; mental workload; task difficulty; processing demand; mental arithmetic; dual task; resource allocation; overload
+
+Decision-making and metacognition
+	perceptual decision-making; decision uncertainty; confidence; metacognition; evidence accumulation; choice bias; serial choice bias; random-dot motion; two-alternative forced choice
+
+Learning, surpirse, and prediction
+	prediction error; surprise; surprisal; novelty; oddball; deviance detection; orienting response; expectancy violation; regularity violation; statistical learning; probabilistic learning; reversal learning
+
+Reward and Motivation
+	reward anticipation; reward prediction error; incentive; motivation; effort allocation; effort discounting; engagement; disengagement; exploration/exploitation; bandit task
+
+Language and reading
+	lexical processing; lexical  decision; semantic processing; semantic ambiguity; syntactic complexity;  sentence comprehension; reading comprehension; linguistic surprisal;  bilingual language control
+
+Auditory cognition and listening effort
+	listening effort; speech perception; speech-in-noise; auditory attention; auditory discrimination; degraded speech; intelligibility; competing speech; auditory memory
+
+Fatigue and changing arousal
+	mental fatigue; vigilance decrement; time-on-task; alertness; sleepiness, sleep deprivation, and arousal fluctuation
+
+Social Cognition
+	social attention; joint attention; gaze cueing; face processing; empathy; trust; pupil mimicry; social evaluation; theory of mind
+
+Mental Imagery and awareness
+	mental imagery; visual imagery; imagined brightness; internal attention; perceptual awareness; binocular rivalry; conscious perception
+
+Individual differences and lifespan
+	individual differences; fluid intelligence; attentional control; cognitive ability; cognitive aging; older adults; developmental; children; infants
+
+
+* Boolean Searches: 
+    * without requiring any indication that data is public: (pupillometr* OR "pupil size" OR "pupil diameter" OR "pupil dilation" OR "pupillary response" OR "pupil-linked arousal") AND (memory OR attention OR emotion OR cognition OR learning OR decision* OR effort OR workload OR language OR arousal)
+    * Do narrower searches after that: 
+        * EX: (pupillometr* OR "pupil dilation" OR "pupil diameter") AND ("episodic memory" OR recognition OR recollection OR familiarity OR "subsequent memory" OR "source memory" OR "event boundary") (pupillometr* OR "pupil size" OR "pupil-linked arousal") AND ("sustained attention" OR vigilance OR "mind wandering" OR "attentional lapse" OR SART OR gradCPT) (pupillometr* OR "pupil dilation" OR "pupillary response") AND (emotion* OR affect* OR valence OR "emotional arousal" OR "fear conditioning" OR reappraisal)
+    * Specifically for data availability (add this block to a pupil block): 
+        * ("open data" OR "publicly available" OR "data availability" OR "data sharing" OR dataset* OR "data set" OR "raw data" OR "source data" OR "supplementary data" OR "supporting information" OR repository OR "Open Science Framework" OR OSF OR Dryad OR Zenodo OR Figshare OR OpenNeuro OR GitHub)
+    * For especially promising reprocessing candidates:
+        * (pupillometr* OR "pupil diameter" OR "pupil size") AND ("raw data" OR "raw recordings" OR "continuous recordings" OR "sample-level" OR "time series") AND ("event markers" OR timestamps OR "trial information" OR "behavioral data" OR "behavioural data" OR "analysis code")
+
+
+
+These shorter queries are useful for Google Scholar and web searches.
+Each line is a separate query. Repeat promising searches with "pupil diameter", "pupil dilation", or "pupil-linked arousal"substituted for pupillometry.
+
+1. pupillometry working memory open data
+2. pupillometry digit span raw data
+3. pupillometry n-back dataset
+4. pupillometry recognition memory data availability
+5. "pupil dilation" "old/new" data
+6. pupillometry subsequent memory dataset
+7. "pupil-linked arousal" "event boundaries" data
+8. pupillometry sustained attention raw data
+9. "pupil diameter" "mind wandering" dataset
+10. pupillometry visual search open data
+11. pupillometry attentional blink data
+12. pupillometry emotional arousal dataset
+13. "pupil dilation" "emotional words" data
+14. pupillometry affective pictures raw data
+15. pupillometry fear conditioning dataset
+16. pupillometry emotion regulation open data
+17. pupillometry Stroop data availability
+18. pupillometry task switching dataset
+19. pupillometry mental effort raw data
+20. "pupil-linked arousal" "decision uncertainty" data
+21. pupillometry confidence open data
+22. pupillometry prediction error dataset
+23. pupillometry auditory oddball raw data
+24. pupillometry reward anticipation dataset
+25. pupillometry listening effort open data
+26. pupillometry sentence comprehension dataset
+27. "pupil diameter" "time-on-task" data
+28. "baseline pupil size" "individual differences" data
+
+For a known paper, targeted follow-ups are often more productive than another broad search:
+
+1. "EXACT ARTICLE TITLE" data
+2. "EXACT ARTICLE TITLE" OSF
+3. "EXACT ARTICLE TITLE" GitHub
+4. "EXACT ARTICLE TITLE" supplementary
+5. "AUTHOR SURNAME" pupillometry dataset
+
+
+
+Web Repository (search within the repositories too): 
+
+1. site:osf.io pupillometry memory
+2. site:osf.io "pupil diameter" attention
+3. site:osf.io pupillometry emotion
+4. site:datadryad.org pupillometry
+5. site:datadryad.org "pupil diameter"
+6. site:zenodo.org pupillometry
+7. site:figshare.com pupillometry
+8. site:openneuro.org pupillometry
+9. site:gin.g-node.org pupillometry
+10. site:data.mendeley.com pupillometry
+11. site:dataverse.harvard.edu pupillometry
+12. site:github.com pupillometry "raw data"
+
+Also search institutional repositories, because relevant data can live outside those large platforms. Useful additional queries include:
+
+1. "eye tracking" "pupil" "memory" dataset
+2. "eye tracking" "pupil" "emotion" dataset
+3. EEG pupillometry dataset
+4. fMRI pupillometry dataset
+5. EyeLink pupil EDF dataset
+6. EyeLink pupil ASC memory
+7. Tobii pupillometry dataset
+8. "Pupil Labs" cognitive dataset
+
+
+Previous Reanalyses + Authors who already shared reusable code: 
+pupillometr* AND (reproducib* OR replicat* OR reanalys* OR robust)
+pupillometr AND (preprocess* OR "processing pipeline" OR "baseline correction" OR interpolation OR filtering OR normalization OR detrending) pupillometr* AND (multiverse OR "specification curve" OR "sensitivity analysis" OR "analytic flexibility" OR "researcher degrees of freedom")
+
+Additionals Terms that could wield results: 
+
+* blink removal, blink interpolation, artifact rejection, artefact rejection
+* missing data, data loss, trial exclusion, quality control
+* subtractive baseline, divisive baseline, z-scoring, dynamic range normalization
+* gaze position, pupil foreshortening error, luminance, pupillary light response
+* time window, peak dilation, mean dilation, area under the curve, response latency
+* deconvolution, generalized additive mixed model, growth curve analysis, cluster-based permutation
+* SOFTWARE names: PupillometryR, gazeR, CHAP, and PuPl and eyeris 
+
+
+Additionals Sources:
+
+* eyeris paper's won references are also a useful list 
+* the citation lists for every paper you read 
+
+
+HOW TO SCREEN CANDIDATES: 
+
+Field 
+	What to establish 
+
+Publication and target finding
+	Which published contrast,  association, interaction, or time-course result will be rechecked?
+
+Dataset identity 
+	Repository URL, DOI/version, and  whether other papers reuse the same participants
+
+Data level 
+	Continuous raw samples; raw trial  segments; preprocessed time series; trial summaries; group summaries
+
+Timing and task metadata 
+	Timestamps, event markers, trial IDs, conditions, stimulus timing, and response timing
+
+Acquisition 
+	Tracker, sampling rate, recorded eye(s), pupil area versus diameter, and measurement units
+
+Original workflow 
+	Preprocessing settings, exclusion rules, baseline interval, analysis window, model, and code
+
+Context and confounds 
+	Luminance information, gaze position, blinks, missingness, and relevant task differences
+
+Reuse feasibility 
+	Accessible files, documentation, usage conditions, conversion needs, and unresolved questions
+
+
+
+Blocks of search: 
+
+* pupillometry, pupillometric,  “pupil dilation”, “pupil dilatation”, “pupil diameter”, “pupil size”,  “pupil area”, “pupillary response(s)”, “pupil response(s)”, “pupil-linked  arousal”, “task-evoked pupillary response”, TEPR, “baseline pupil”, “tonic  pupil”, “phasic pupil”, “pupil old/new effect”, “pupil-indexed”
+* Mechanism terms: “locus coeruleus”, “LC-NA”, noradrenergic, norepinephrine, “arousal”, “adaptive  gain”
+* Episodic memory: encoding, retrieval,  “subsequent memory”, “old/new”, “recognition memory”, “free recall”,  “source memory”, “associative memory”, “remember/know”,  familiarity/recollection, “levels of processing”, “event boundaries”,  “event segmentation”, “retrieval success”, “mnemonic interference”,  “prospective memory”, “emotional memory”, “memory consolidation”
+* Working memory and load: “working memory capacity”,  “cognitive load”, “mental effort”, n-back, “digit span”, Sternberg,  “change detection”, “delayed match to sample”, “mental arithmetic”, “set  size”
+* Attention and vigilance: “sustained attention”,  vigilance, “attention lapses”, “mind wandering”, “task-unrelated thought”,  SART, “psychomotor vigilance”, oddball, “attentional blink”, flanker,  Stroop, “visual search”, “time-on-task”, “vigilance decrement”, “media  multitasking”
+* Emotion and arousal: “emotional arousal”,  “affective pictures”, IAPS, “emotional sounds”, “emotional faces”,  valence, “emotion recognition”, “threat”, “fear conditioning”, stress
+* Decision-making and learning: “decision uncertainty”,  confidence, “perceptual decision”, “random dot motion”, surprise,  “prediction error”, “reinforcement learning”, “reversal learning”, bandit,  “exploration exploitation”, “value-based”, reward, “effort discounting”
+* Cognitive control and  preparation: “cognitive control”, “task switching”, “conflict”, “response  preparation”, “response inhibition”
+* Language and listening effort: “listening effort”, “speech  in noise”, “sentence processing”
+* Aging and individual differences: “cognitive aging”, “older  adults”, “baseline pupil size” with intelligence or “cognitive ability”,  “individual differences”
+* Data availability: 
+* “open data”, “data availability”,  “data sharing”, “raw data”, “publicly available”, “available on OSF”,  “Open Science Framework”, GitHub, Zenodo, Dryad, figshare, “Harvard  Dataverse”, “Mendeley Data”, OpenNeuro, “supplementary data”, “open data  badge”, preregistered, “registered report”
+* DOI fragments (searchable in full text or  DataCite): 10.17605/OSF.IO, 10.5281/zenodo, 10.5061/dryad, 10.6084/m9.figshare, 10.7910/DVN, 10.17632, 10.18112/openneuro
+
+
+
+PubMed (truncation turns off automatic term mapping, so keep the synonyms explicit):
+(pupillometr*[tiab] OR "pupil dilation"[tiab] OR "pupil diameter"[tiab] OR "pupil size"[tiab] OR "pupillary response*"[tiab] OR "pupil-linked"[tiab] OR "task-evoked pupil*"[tiab])
+AND (memory[tiab] OR encoding[tiab] OR retrieval[tiab] OR attention[tiab] OR emotion*[tiab] OR arousal[tiab] OR "cognitive load"[tiab] OR "mental effort"[tiab] OR decision*[tiab] OR "working memory"[tiab])
+AND (humans[mh])
+NOT ("pupillary light reflex"[tiab] OR "neurological pupil index"[tiab] OR anesthesia[tiab])
+Scopus (WoS equivalent: swap TITLE-ABS-KEY for TS=):
+TITLE-ABS-KEY(pupillometr* OR "pupil dilation" OR "pupil diameter" OR "pupil size" OR "pupil-linked arousal" OR "task-evoked pupil*")
+AND TITLE-ABS-KEY("episodic memory" OR "recognition memory" OR "working memory" OR "sustained attention" OR "mind wandering" OR "emotional arousal" OR "decision uncertainty" OR "listening effort" OR "cognitive load")
+AND TITLE-ABS-KEY(EyeLink OR "open data" OR OSF OR "data sharing")
+Database indexing rarely covers the data availability statement, so dropping the third line and screening full texts is usually better than trusting that clause.
+Full-text search (Europe PMC, PMC, Google Scholar). This is where data-availability statements and methods sections get caught:
+(pupil* AND EyeLink AND ("osf.io" OR zenodo OR dryad OR figshare OR github) AND ("data availability" OR "raw data"))
+"pupil" "EyeLink" "all data" "publicly available" memory
+"pupil size" "available at" "osf.io" attention
+
+Task-Specific Anchors 
+
+    * Memory/Load: ("n-back" OR  "digit span" OR "Sternberg task" OR "Simon  task") AND "pupillometry"
+    * Attention/Control: ("Stroop" OR  "psychomotor vigilance" OR "PVT" OR "oddball  paradigm" OR "flanker") AND "pupillometry"
+    * Emotion/Arousal: ("IAPS" OR "fear  conditioning" OR "emotional Stroop") AND  "pupillometry"
+
+
+Repository and code searches
+
+* OSF, Zenodo, Dryad, figshare,  Mendeley Data: pupil, pupillometry, eyelink, eye tracking, asc, edf, pupil dilation memory. Also try DataCite search and Google Dataset Search with pupil. Search ("cognitive  load" OR "attention") AND ("eye tracking" OR  "pupil") AND (".asc" OR ".edf" OR "time  series") to immediately target raw tracker files.
+* GitHub code search: eyelinker, read.asc, "pupil"  "edf2asc", PupillometryR, gazeR, pypillometry, "pupil" "PROBE_START"-style event-message  patterns, eyeris. Repos that cite other pupil packages often point to the underlying  raw data.
+* OpenNeuro: look for EEG or fMRI  datasets with simultaneous pupillometry. ("pupillometry"  AND "BIDS") (Many high-quality pupillometry datasets are bundled as auxiliary  physiological channels within EEG/fMRI datasets).
+
+
+
+Complementary strategies
+
+1. Citation chasing. Take the key seed papers  (Mathôt & Vilotijević 2023; Steinhauer et al. 2022; Fink et al. 2024,  which has a table of cognitive processes linked to pupil size; Kret &  Sjak-Shie 2019; Joshi & Gold 2020; Mathôt 2018; van der Wel & van  Steenbergen 2018) and run forward and backward citation searches in  OpenAlex, Semantic Scholar, or Scopus.
+2. Meta-research angle. Search for pupil* AND  (reanalysis OR re-analysis OR reproducib* OR replicat* OR multiverse OR  "analytic flexibility" OR "preprocessing choices" OR  "forking paths"). Also run pupil* AND "meta-analysis" so you know what already  exists. Studies that have already been re-analyzed or replicated are  useful comparison points.
+3. Preprints. Run the same strings in  PsyArXiv, bioRxiv, and OSF Preprints. Preprints often link their data when  the journal version doesn’t.
+4. OSF Registries. Search pupil* for preregistered pupil  studies, which are more likely to have open data.
+5. Journals with data-sharing  requirements or badges. Filter for these (e.g., eLife, PLOS ONE, Scientific Reports,  Nature Communications, Behavior Research Methods). Check each journal’s  current policy before relying on this.
+6. Author contact for promising studies where  the paper says “available on request.”
+
+
+
+Seed candidates
+These are only starting points for screening, and I haven’t verified which have public raw data or EyeLink recordings.
+
+* From the eyeris paper’s reference  list:
+    * Memory: Clewett et al. 2020;  Madore et al. 2020; Miller et al. 2019; Miller & Unsworth 2020;  Robison et al. 2022
+    * Working memory and attention:  Keene et al. 2022; Robison & Unsworth 2019; Unsworth & Robison  2015, 2016, 2017a, 2018; Martin et al. 2022; Hopstaken et al. 2015
+    * Decision and prediction error:  Urai et al. 2017; Gee et al. 2014; Kawaguchi et al. 2018; Van Slooten et  al. 2018; Alamia et al. 2019
+    * Emotion: Bradley et al. 2008;  Oliva & Anikin 2018; Widmann et al. 2018
+    * Aging: He et al. 2020; Piquado  et al. 2010; Johansson et al. 2018; Tsukahara et al. 2016
+
+
+More task specific anchors: 
+Researchers frequently title their datasets and papers based on the task paradigm rather than the overarching cognitive theory. Searching for these specific tasks paired with pupil terms often surfaces hidden datasets:
+
+* Memory/Load: ("n-back" OR  "digit span" OR "Sternberg task" OR "Simon  task") AND "pupillometry"
+* Attention/Control: ("Stroop" OR  "psychomotor vigilance" OR "PVT" OR "oddball  paradigm" OR "flanker") AND "pupillometry"
+* Emotion/Arousal: ("IAPS" OR "fear  conditioning" OR "emotional Stroop") AND  "pupillometry"
+

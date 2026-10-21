@@ -1,0 +1,6 @@
+[project]
+name = "orchard-literature"
+version = "0.1.0"
+description = "A local, auditable systematic literature search workspace"
+requires-python = ">=3.10"
+dependencies = []
