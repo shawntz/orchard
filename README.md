@@ -1,6 +1,6 @@
 # Orchard
 
-A local literature-search workspace for the Eyeris project: import search terms, review exact queries, retrieve scholarly records, consolidate duplicates, screen papers, inspect data links, and export an auditable research record.
+A local literature-search workspace for the `eyeris` project: import search terms, review exact queries, retrieve scholarly records, consolidate duplicates, screen papers, inspect data links, and export an auditable research record.
 
 **Version 0.1 is a working local foundation, not a completed implementation of every feature in the original specification.** It has one provider adapter (Europe PMC). Live API access could not be verified in the build environment. No real papers or fake demonstration results are preloaded. The supplied download includes the user's original terms document and five unapproved query drafts in its local database; these are excluded from GitHub by `.gitignore`.
 
@@ -45,18 +45,18 @@ When offline, you can still import documents, plan queries, import actual Europe
 
 ## What is implemented
 
-- Original text and SHA-256 preservation; line-based provenance for extracted term occurrences.
-- Rule-based concept suggestions; conservative exact normalization; reproducible query generation.
-- Immutable query versions; explicit approval; repeat-search detection, reuse, and fresh runs.
-- Europe PMC `core` metadata, cursor pagination, bounded retries, and background search jobs.
-- SQLite persistence, interruption recovery, source snapshots, per-run discoveries, and append-only audit events.
-- Exact DOI/provider-ID consolidation; ambiguous-title review; related-report links and history-preserving merges.
-- Editable canonical display metadata with source values and correction history retained.
-- Separate title/abstract and full-text screening, versioned criteria, exclusions and concurrent-edit protection.
-- PMC full-text retrieval, authorized plain-text import, contextual dataset/code/supplement candidate extraction, and explicit URL checks.
-- Eyeris reprocessing-feasibility assessment history.
-- Filtered, paginated paper library; resource inventory; complete CSV/JSON/history export.
-- Automated workflow tests and a GitHub Actions test configuration.
+- [x] Original text and SHA-256 preservation; line-based provenance for extracted term occurrences.
+- [x] Rule-based concept suggestions; conservative exact normalization; reproducible query generation.
+- [x] Immutable query versions; explicit approval; repeat-search detection, reuse, and fresh runs.
+- [x] Europe PMC `core` metadata, cursor pagination, bounded retries, and background search jobs.
+- [x] SQLite persistence, interruption recovery, source snapshots, per-run discoveries, and append-only audit events.
+- [x] Exact DOI/provider-ID consolidation; ambiguous-title review; related-report links and history-preserving merges.
+- [x] Editable canonical display metadata with source values and correction history retained.
+- [x] Separate title/abstract and full-text screening, versioned criteria, exclusions and concurrent-edit protection.
+- [x] PMC full-text retrieval, authorized plain-text import, contextual dataset/code/supplement candidate extraction, and explicit URL checks.
+- [x] `eyeris` reprocessing-feasibility assessment history.
+- [x] Filtered, paginated paper library; resource inventory; complete CSV/JSON/history export.
+- [x] Automated workflow tests and a GitHub Actions test configuration.
 
 ## Data and privacy
 
@@ -86,10 +86,6 @@ python3 scripts/live_smoke.py
 
 See [validation.md](docs/validation.md) for actual executed results and outstanding verification. Synthetic records exist only in isolated tests, never in the supplied live database.
 
-## Push to your GitHub repository
-
-Use [GITHUB_SETUP.md](GITHUB_SETUP.md) for commands that preserve the existing repository history and push a new branch to `shawntz/orchard`. Nothing has been pushed from this environment.
-
 ## Structure
 
 ```text
@@ -107,5 +103,3 @@ docs/               architecture, API, limitations and validation
 data/               local research database (ignored by Git)
 .github/workflows/  automated test configuration
 ```
-
-The repository ZIP originally contained only a 10-byte README (`# orchard`); there was no app, dependency stack, or project-specific agent instruction to preserve. Python standard-library HTTP, SQLite and vanilla JavaScript were chosen because dependencies could not be installed in the build environment and the app can now run without downloads. See [architecture.md](docs/architecture.md), [api.md](docs/api.md), and [limitations.md](docs/limitations.md).
