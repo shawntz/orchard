@@ -1,0 +1,16 @@
+# Private research state, uploaded documents, and exports stay local.
+data/*
+!data/.gitkeep
+exports/
+*.sqlite3
+*.sqlite3-*
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.DS_Store
+*.log
