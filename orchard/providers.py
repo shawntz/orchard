@@ -1,6 +1,8 @@
 """Documented Europe PMC adapter, bounded retries, guarded resource verification."""
+import hashlib
 import ipaddress
 import json
+import re
 import socket
 import threading
 import time
@@ -11,6 +13,13 @@ from urllib.error import HTTPError, URLError
 import xml.etree.ElementTree as ET
 
 BASE = 'https://www.ebi.ac.uk/europepmc/webservices/rest'
+PMC_CLOUD = 'https://pmc-oa-opendata.s3.amazonaws.com'
+PDF_LIMIT = 60_000_000
+
+
+def is_pdf(data):
+    """PDF readers accept the header anywhere in the first kilobyte."""
+    return isinstance(data, bytes) and b'%PDF-' in data[:1024]
 
 
 def parse_article_xml(data):
@@ -111,7 +120,6 @@ class EuropePMC:
         return Page(records, result.get('nextCursorMark'), result['hitCount'])
 
     def fulltext(self, pmcid, callback=None):
-        import re
         if not re.fullmatch(r'PMC\d+', pmcid):
             raise ValueError('Invalid PMCID.')
         data, url, _ = self.transport.get(BASE + '/' + pmcid + '/fullTextXML', callback=callback)
@@ -125,6 +133,46 @@ class EuropePMC:
                         if key.endswith('href') and value.startswith(('http://', 'https://')):
                             pieces.append(' '.join(elem.itertext()) + ' ' + value)
         return '\n'.join(pieces), url
+
+
+class PMCCloud:
+    """PMC Article Datasets (AWS Open Data): open-access and author-manuscript PDFs with license metadata."""
+    name = 'pmc-cloud'
+
+    def __init__(self, transport=None):
+        self.transport = transport or Transport()
+
+    def pdf(self, pmcid, callback=None):
+        if not re.fullmatch(r'PMC\d+', pmcid or ''):
+            raise ValueError('Invalid PMCID.')
+        listing, _, _ = self.transport.get(PMC_CLOUD + '/?' + urlencode({'list-type': 2, 'prefix': pmcid + '.', 'delimiter': '/'}), callback=callback)
+        versions = []
+        for elem in parse_article_xml(listing).iter():
+            match = re.fullmatch(re.escape(pmcid) + r'\.(\d+)/', elem.text or '') if elem.tag.split('}')[-1] == 'Prefix' else None
+            if match:
+                versions.append(int(match.group(1)))
+        if not versions:
+            raise LookupError(pmcid + ' is not in the PMC open-access or author-manuscript dataset.')
+        key = f'{pmcid}.{max(versions)}'
+        data, _, _ = self.transport.get(f'{PMC_CLOUD}/{key}/{key}.json', callback=callback)
+        meta = json.loads(data)
+        match = re.fullmatch(r's3://pmc-oa-opendata/(' + re.escape(key) + r'/[\w.\-]+\.pdf)(?:\?md5=([0-9a-f]{32}))?', str(meta.get('pdf_url') or ''))
+        if not match:
+            raise LookupError(key + ' has no PDF in the PMC dataset.')
+        url = PMC_CLOUD + '/' + match.group(1)
+        data, _, _ = self.transport.get(url, limit=PDF_LIMIT, callback=callback)
+        if match.group(2) and hashlib.md5(data).hexdigest() != match.group(2):
+            raise ValueError('PDF checksum does not match the PMC manifest.')
+        if not is_pdf(data):
+            raise ValueError('PMC returned a file that is not a PDF.')
+        return data, url, {'license': meta.get('license_code'), 'version': key,
+                           'is_manuscript': meta.get('is_manuscript'), 'is_retracted': meta.get('is_retracted')}
+
+    def download(self, url, callback=None):
+        data, final, _ = self.transport.get(url, limit=PDF_LIMIT, callback=callback)
+        if not is_pdf(data):
+            raise ValueError('Response was not a PDF (often a login or bot-check page).')
+        return data, final
 
 
 def normalize_epmc(raw):

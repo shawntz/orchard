@@ -26,6 +26,9 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | POST `/duplicates` | `id`, `action` (`merge`, `distinct`, `related`), `reason` | Resolution; canonical ID |
 | POST `/fulltext` | `id`, `text`, `origin` | Store authorized text and extract candidate resources |
 | POST `/fetch-fulltext` | `id` | Attempt PMC XML retrieval; failures logged |
+| POST `/fetch-pdf` | `id` | Retrieve an open-access PDF (PMC article dataset, then provider-listed PDF links); `{pdf, reused}`; failures logged |
+| POST `/papers/{id}/pdf` | Raw PDF body, `Content-Type: application/pdf`, ≤60 MB; query `name` | Store an uploaded PDF; `{pdf, reused}` |
+| GET `/pdfs/{id}` | — | Stored PDF, served inline for the reader |
 | GET `/resources` | — | Resource inventory with evidence and status |
 | POST `/resource` | `id`, `action` (`verify`, `confirm`, `reject`), `note` | Resource status; confirm/reject require notes |
 | GET `/audit` | `page`, `q` | Newest-first events, 100/page |
