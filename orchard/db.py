@@ -48,6 +48,14 @@ CREATE TRIGGER IF NOT EXISTS immutable_decisions BEFORE UPDATE ON decisions BEGI
 CREATE TRIGGER IF NOT EXISTS immutable_queries BEFORE UPDATE ON queries BEGIN SELECT RAISE(ABORT,'Queries are versioned'); END;
 '''
 
+# Version 2: multi-provider search batches and retrieved full-text files. Additive only.
+MIGRATION_2 = '''
+CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), sha256 TEXT NOT NULL, url TEXT NOT NULL, source TEXT NOT NULL, content_type TEXT, size INTEGER NOT NULL, path TEXT NOT NULL, text_method TEXT, created TEXT NOT NULL, UNIQUE(paper_id,sha256));
+CREATE INDEX IF NOT EXISTS runs_batch ON runs(batch_id);
+INSERT OR IGNORE INTO schema_version VALUES(2);
+'''
+SCHEMA_VERSION = 2
+
 
 class Database:
     def __init__(self, path):
@@ -56,6 +64,9 @@ class Database:
         with self.connect() as c:
             c.execute('PRAGMA journal_mode=WAL')
             c.executescript(SCHEMA)
+            if 'batch_id' not in {r['name'] for r in c.execute('PRAGMA table_info(runs)')}:
+                c.execute('ALTER TABLE runs ADD COLUMN batch_id TEXT')
+            c.executescript(MIGRATION_2)
             c.execute('INSERT OR IGNORE INTO project VALUES(1,?,?,?)', ('Orchard', None, now()))
 
     @contextmanager

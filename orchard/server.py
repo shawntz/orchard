@@ -11,7 +11,7 @@ STATIC=Path(__file__).parent/'static'
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version='Orchard/0.1'
+    server_version='Orchard/0.2'
 
     def send(self, status, body, kind='application/json; charset=utf-8', download=None):
         if not isinstance(body,bytes): body=json.dumps(body,ensure_ascii=False).encode()
@@ -56,6 +56,9 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/papers': return self.send(200,s.listing(**{k:v for k,v in args.items() if k in ('q','page','status','year','source','resource_kind')}))
         if path.startswith('/api/papers/'): return self.send(200,s.paper(path.split('/')[-1]))
         if path=='/api/duplicates': return self.send(200,s.db.rows('SELECT d.*,a.title title_a,b.title title_b,a.year year_a,b.year year_b,a.doi doi_a,b.doi doi_b FROM duplicates d JOIN papers a ON a.id=d.a JOIN papers b ON b.id=d.b ORDER BY d.rowid DESC'))
+        if path.startswith('/api/files/'):
+            row,data=s.file(path.split('/')[-1])
+            return self.send(200,data,'application/pdf',row['sha256'][:16]+'.pdf')
         if path=='/api/resources':
             return self.send(200,s.db.rows('SELECT r.*,p.title FROM resources r JOIN papers p ON p.id=r.paper_id ORDER BY r.rowid DESC'))
         if path=='/api/audit':
