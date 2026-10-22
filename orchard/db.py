@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS fulltexts(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), content TEXT NOT NULL, sha256 TEXT NOT NULL, origin TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS assessments(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), fields TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, entity_id TEXT, detail TEXT NOT NULL, created TEXT NOT NULL);
+INSERT OR IGNORE INTO schema_version VALUES(2);
+CREATE TABLE IF NOT EXISTS eyelink_scans(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), status TEXT NOT NULL, result TEXT, pdf_url TEXT, pdf_path TEXT, pdf_sha256 TEXT, steps TEXT NOT NULL DEFAULT '[]', repositories INTEGER NOT NULL DEFAULT 0, eyelink_files INTEGER NOT NULL DEFAULT 0, error TEXT, created TEXT NOT NULL, finished TEXT);
+CREATE INDEX IF NOT EXISTS eyelink_scans_paper ON eyelink_scans(paper_id);
+CREATE TABLE IF NOT EXISTS repository_checks(id TEXT PRIMARY KEY, scan_id TEXT NOT NULL REFERENCES eyelink_scans(id), paper_id TEXT NOT NULL REFERENCES papers(id), repository TEXT NOT NULL, identifier TEXT NOT NULL, url TEXT NOT NULL, evidence TEXT NOT NULL, status TEXT NOT NULL, files_listed INTEGER NOT NULL DEFAULT 0, eyelink_files INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '[]', created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS repository_files(id TEXT PRIMARY KEY, check_id TEXT NOT NULL REFERENCES repository_checks(id), path TEXT NOT NULL, size INTEGER, url TEXT, kind TEXT NOT NULL, header TEXT NOT NULL, note TEXT, created TEXT NOT NULL);
 CREATE TRIGGER IF NOT EXISTS immutable_audit_update BEFORE UPDATE ON audit BEGIN SELECT RAISE(ABORT,'Audit events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS immutable_audit_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT,'Audit events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS immutable_decisions BEFORE UPDATE ON decisions BEGIN SELECT RAISE(ABORT,'Screening history is immutable'); END;

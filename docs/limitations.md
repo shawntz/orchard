@@ -13,7 +13,9 @@ This is a usable local foundation. It does not meet every acceptance criterion o
 | AI screening | Not implemented; no model configured | Optional evidence-cited recommendations, distinct from human decisions |
 | Criteria | Versioned inclusion/exclusion text blocks, not individually identified criteria | Add structured criteria IDs and per-criterion decision evidence |
 | Study mapping / PRISMA | Report records and actions available; study count unknown; no complete flow diagram | Model studies/reports and reconcile stage counts before rendering |
-| Dataset discovery | Contextual URLs from retrieved text/metadata; no independent repository searches | Add explicit repository inference, license checks and raw-data validation |
+| Dataset discovery | Contextual URLs from retrieved text/metadata; EyeLink finder lists OSF, Zenodo, Figshare, Dryad, Dataverse, OpenNeuro and GitHub links for .edf/.asc files. No searching of repositories for datasets the paper does not link | Add repository search by title/DOI, license checks and GIN/Mendeley/GitLab listings |
+| PDF retrieval | Open-access PDF links only; many publishers and Europe PMC's PDF render block automated downloads (403 or bot-check pages), which are recorded as failures | Supply the PDF URL manually, set `ORCHARD_UNPAYWALL_EMAIL`, or rely on PMC XML full text |
+| EyeLink detection | File names plus header bytes for up to 12 files per scan (2 per ZIP); RAR/7z/TAR archives are not opened; Dryad blocks anonymous downloads, so only its file names are checked | Optional full download and conversion checks |
 | Resource metadata | Evidence and access status captured; no structured license/format/download manifest | Add those fields and maintain unknown vs verified states |
 | Full text | Europe PMC XML or user-supplied authorized plain text; no PDF parsing or all-publisher retrieval | Expand legal retrieval routes and robust full-text extraction |
 | XML | Entity/DOCTYPE declarations rejected; some valid article XML may therefore require manual import | Use hardened XML parsing if dependency availability permits |

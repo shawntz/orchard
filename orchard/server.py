@@ -58,6 +58,8 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/duplicates': return self.send(200,s.db.rows('SELECT d.*,a.title title_a,b.title title_b,a.year year_a,b.year year_b,a.doi doi_a,b.doi doi_b FROM duplicates d JOIN papers a ON a.id=d.a JOIN papers b ON b.id=d.b ORDER BY d.rowid DESC'))
         if path=='/api/resources':
             return self.send(200,s.db.rows('SELECT r.*,p.title FROM resources r JOIN papers p ON p.id=r.paper_id ORDER BY r.rowid DESC'))
+        if path=='/api/eyelink': return self.send(200,s.eyelink_scans())
+        if path.startswith('/api/eyelink/'): return self.send(200,s.eyelink_scan(path.split('/')[-1]))
         if path=='/api/audit':
             page=max(1,int(args.get('page',1)))
             q=args.get('q','')
@@ -107,6 +109,8 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/fulltext': return s.import_fulltext(**b)
         if path=='/api/fetch-fulltext': return s.fetch_fulltext(b['id'])
         if path=='/api/resource': return s.resource_action(**b)
+        if path=='/api/eyelink-scan': return s.scan_eyelink(b['id'],b.get('pdf_url'))
+        if path=='/api/eyelink-scan-all': return s.scan_eyelink_batch(b.get('scope','unscanned'),b.get('limit',200))
         raise KeyError('Unknown API operation.')
 
 

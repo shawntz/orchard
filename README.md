@@ -39,7 +39,8 @@ There is no build or install step. Run commands from the directory containing th
 6. **Paper library:** open a paper. Inspect its source records and discovery history. Screen title/abstract and full text separately. Record an exclusion reason when excluding.
 7. **Duplicate review:** inspect similar titles. Confirm a duplicate, keep distinct reports, or link related versions. Merge history and both records' screening decisions are retained.
 8. **Full text & data:** retrieve PMC text where available or paste authorized plain text. Candidate links retain supporting passages. A reachable URL is distinct from a researcher-verified dataset. Record licenses and reprocessing feasibility in the Eyeris assessment fields.
-9. **Audit & export:** download a ZIP containing per-table CSVs, complete JSON, and a readable search-strategy report.
+9. **EyeLink finder:** on a paper, choose **Find EyeLink files** (optionally paste a PDF URL), or queue many papers from the **EyeLink finder** page. Orchard downloads the PDF, extracts its text and embedded links, finds data-repository links, lists those repositories, and reports `.edf`/`.asc` files. See [EyeLink finder](#eyelink-finder).
+10. **Audit & export:** download a ZIP containing per-table CSVs, complete JSON, and a readable search-strategy report.
 
 When offline, you can still import documents, plan queries, import actual Europe PMC `core` JSON responses, screen records, and export. The record import accepts either `{"resultList":{"result":[...]}}` or a record array. Each record requires `source` and `id`. Missing metadata remains null. Importing a provider file does not claim that Orchard performed a live search.
 
@@ -55,8 +56,30 @@ When offline, you can still import documents, plan queries, import actual Europe
 - [x] Separate title/abstract and full-text screening, versioned criteria, exclusions and concurrent-edit protection.
 - [x] PMC full-text retrieval, authorized plain-text import, contextual dataset/code/supplement candidate extraction, and explicit URL checks.
 - [x] `eyeris` reprocessing-feasibility assessment history.
+- [x] EyeLink finder: PDF download, repository-link detection, repository file listings, remote ZIP directories and `.edf`/`.asc` header checks.
 - [x] Filtered, paginated paper library; resource inventory; complete CSV/JSON/history export.
 - [x] Automated workflow tests and a GitHub Actions test configuration.
+
+## EyeLink finder
+
+For each scanned paper Orchard:
+
+1. **Downloads the PDF.** It tries, in order: a PDF URL you supply, Unpaywall (only if `ORCHARD_UNPAYWALL_EMAIL` is set), PDF links in the Europe PMC record, and the Europe PMC PDF render. The PDF is saved in `data/pdfs/` and its text plus embedded link annotations are stored as full text. A login, cookie or bot-check page is recorded as a failed attempt, not a PDF. If a PMCID exists, PMC XML full text is also retrieved.
+2. **Finds repository links** in the PDF, full text, abstract and stored resources: OSF (including `view_only` links and OSF DOIs), Zenodo, Figshare, Dryad, Dataverse, OpenNeuro and GitHub. Links in a data-availability context are checked first, up to 15 per paper. GIN, Mendeley Data and GitLab links are detected and marked *unsupported* for manual checking.
+3. **Lists each repository through its public API** (OSF recursively, including components and add-on storage) and flags `.edf`, `.asc` (also `.gz`) files.
+4. **Looks inside ZIP archives** without downloading them, by reading only the ZIP directory with HTTP byte ranges.
+5. **Reads the first bytes** of a few candidates per repository. **EyeLink header ✓** means the file starts with SR Research's `SR_RESEARCH` header (EDF) or EDF2ASC header lines (ASC). `.edf` is also the European Data Format used for EEG/PSG; those files are labelled *EEG/PSG EDF, not EyeLink*.
+
+Each scan stores a verdict: `eyelink_confirmed`, `eyelink_candidates`, `archives_unchecked`, `none_found`, `no_repository_links`, or `incomplete` (a repository failed or a limit was hit). Every step, link, the evidence passage that produced it, and every candidate file are kept and exported. A scan is capped at 400 requests and 15 minutes; each repository at 150 requests and 4 minutes.
+
+Optional environment variables: `ORCHARD_UNPAYWALL_EMAIL` (enables Unpaywall PDF lookup) and `ORCHARD_GITHUB_TOKEN` or `GITHUB_TOKEN` (raises GitHub's 60 requests/hour anonymous limit). Installing `pypdf` (`pip install pypdf`) improves PDF text extraction; without it a built-in reader handles common PDFs and always reads clickable link annotations.
+
+The same check works without the app, on a PDF file, PDF URL, or repository link:
+
+```bash
+python3 -m orchard.eyelink paper.pdf
+python3 -m orchard.eyelink https://osf.io/abcde/
+```
 
 ## Data and privacy
 
@@ -96,6 +119,7 @@ orchard/
   terms.py          document extraction and query construction
   providers.py      Europe PMC, retries and guarded HTTP requests
   service.py        search, ingestion, screening and exports
+  eyelink.py        PDF reading, repository listings and EyeLink file detection
   static/           HTML, CSS and browser JavaScript
 scripts/            source import and optional live API check
 tests/              isolated synthetic workflow tests
