@@ -4,7 +4,7 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 
 | Method / route | Body or query | Result |
 |---|---|---|
-| GET `/overview` | — | Project, current criteria, actual DB counts and recent runs |
+| GET `/overview` | — | Project, current criteria, actual DB counts, recent runs and `providers` (search/lookup role, configured state, note) |
 | POST `/project` | `name`, `question` | Save project wording with audit history |
 | GET `/documents` | — | Imported document metadata |
 | POST `/documents` | `name`, `text` | Import ID or exact-content reuse |
@@ -12,7 +12,7 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | GET `/queries` | — | All immutable versions |
 | POST `/queries` | `label`, `query`, optional `term_ids`, `document_id`, `parent_id`, `approved`, `rationale` | New query version |
 | POST `/generate` | `term_groups` (array of term-ID arrays), `document_id`, `label` | Unapproved draft |
-| POST `/search` | `query_id`, `action` (`new`, `reuse`, `refresh`), `max_records` (1–5000) | Run snapshot, `reused` flag |
+| POST `/search` | `query_id`, `action` (`new`, `reuse`, `refresh`), `max_records` (1–5000, per source), optional `providers` (array; default all configured) | `runs` (one per provider), `run` (first), `reused` flag. `new` conflicts if any selected source already ran the identical search; `reuse` requires all of them to have |
 | GET `/runs` | — | Search/import histories |
 | POST `/resume` | `id` | Queue incomplete provider run from its checkpoint |
 | POST `/records` | `name`, `records` (core response or array) | Explicit manual-import run |
@@ -25,7 +25,8 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | GET `/duplicates` | — | Candidate pairs with comparison metadata |
 | POST `/duplicates` | `id`, `action` (`merge`, `distinct`, `related`), `reason` | Resolution; canonical ID |
 | POST `/fulltext` | `id`, `text`, `origin` | Store authorized text and extract candidate resources |
-| POST `/fetch-fulltext` | `id` | Attempt PMC XML retrieval; failures logged |
+| POST `/fetch-fulltext` | `id` | Try every source until XML or a PDF is retrieved. Returns the paper with `retrieval` (`source`, `url`, `format`, `text_extracted`, `attempts`); 400 with a per-source summary if all fail |
+| GET `/files/{id}` | — | Download a stored PDF |
 | GET `/resources` | — | Resource inventory with evidence and status |
 | POST `/resource` | `id`, `action` (`verify`, `confirm`, `reject`), `note` | Resource status; confirm/reject require notes |
 | POST `/eyelink-scan` | `id`, optional `pdf_url` | Queue an EyeLink scan for one paper; 409 if one is already running |
