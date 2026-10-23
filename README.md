@@ -37,6 +37,7 @@ There is no build or install step. Run commands from the directory containing th
 4. Review the exact query. Use **Approve as a new version**, then **Run search**. Default retrieval is capped at 300 records per attempt. No queries are run merely by importing a document or approving it.
 5. **Search history:** inspect progress. A cap or failure is recorded as partial/failed, never complete. **Resume** continues an incomplete run; **Run fresh search** creates a new run. Reuse does not rerun a search.
 6. **Paper library:** open a paper. Inspect its source records and discovery history. Screen title/abstract and full text separately. Record an exclusion reason when excluding.
+   - **Read the article in Orchard:** under **Article PDF**, use **Find open-access PDF** (PMC open-access dataset, then PDF links listed by Europe PMC) or **Upload PDF** for articles you obtained through your library. The PDF opens in a reader docked beside the screening form and stays open while you record decisions. Use **Expand** for a larger view.
 7. **Duplicate review:** inspect similar titles. Confirm a duplicate, keep distinct reports, or link related versions. Merge history and both records' screening decisions are retained.
 8. **Full text & data:** retrieve PMC text where available or paste authorized plain text. Candidate links retain supporting passages. A reachable URL is distinct from a researcher-verified dataset. Record licenses and reprocessing feasibility in the Eyeris assessment fields.
 9. **EyeLink finder:** on a paper, choose **Find EyeLink files** (optionally paste a PDF URL), or queue many papers from the **EyeLink finder** page. Orchard downloads the PDF, extracts its text and embedded links, finds data-repository links, lists those repositories, and reports `.edf`/`.asc` files. See [EyeLink finder](#eyelink-finder).
@@ -54,6 +55,7 @@ When offline, you can still import documents, plan queries, import actual Europe
 - [x] Exact DOI/provider-ID consolidation; ambiguous-title review; related-report links and history-preserving merges.
 - [x] Editable canonical display metadata with source values and correction history retained.
 - [x] Separate title/abstract and full-text screening, versioned criteria, exclusions and concurrent-edit protection.
+- [x] In-app PDF reader: open-access PDF retrieval from the PMC article dataset or provider-listed links, researcher uploads, source/license/SHA-256 provenance.
 - [x] PMC full-text retrieval, authorized plain-text import, contextual dataset/code/supplement candidate extraction, and explicit URL checks.
 - [x] `eyeris` reprocessing-feasibility assessment history.
 - [x] EyeLink finder: PDF download, repository-link detection, repository file listings, remote ZIP directories and `.edf`/`.asc` header checks.
@@ -83,9 +85,9 @@ python3 -m orchard.eyelink https://osf.io/abcde/
 
 ## Data and privacy
 
-The default database is **`data/orchard.sqlite3`**, relative to this project. It contains the imported document, extracted terms, query versions, raw provider records, full text, decisions and audit events. It survives restarts. The SQLite WAL/SHM files may exist while the app runs.
+The default database is **`data/orchard.sqlite3`**, relative to this project. It contains the imported document, extracted terms, query versions, raw provider records, full text, decisions and audit events. Article PDFs are stored beside it in **`data/pdfs/`**, named by SHA-256. It survives restarts. The SQLite WAL/SHM files may exist while the app runs.
 
-Exports are downloaded to the location your browser chooses. They include the complete research workspace, including original documents and full text; review them before sharing. Back up the entire `data` folder **after stopping the app**. Do not copy only the main SQLite file while writes are in progress.
+Exports are downloaded to the location your browser chooses. They include the complete research workspace, including original documents and full text; review them before sharing. PDF files are not included in exports; only their source, license and SHA-256 are. Back up the entire `data` folder **after stopping the app**. Do not copy only the main SQLite file while writes are in progress.
 
 `.gitignore` excludes `data/*`, exported files, databases, `.env`, caches, and credentials. `.env.example` is documentation only; the app does not automatically load it. No API keys are required for the implemented Europe PMC adapter.
 

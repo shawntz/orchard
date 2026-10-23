@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS relationships(id TEXT PRIMARY KEY, a TEXT NOT NULL RE
 CREATE TABLE IF NOT EXISTS decisions(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), stage TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT, notes TEXT, reviewer TEXT NOT NULL, criteria_id TEXT NOT NULL REFERENCES criteria(id), created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), kind TEXT NOT NULL, url TEXT NOT NULL, repository TEXT, evidence TEXT NOT NULL, origin TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'found_unverified', access_note TEXT, created TEXT NOT NULL, verified TEXT, UNIQUE(paper_id,kind,url,evidence));
 CREATE TABLE IF NOT EXISTS fulltexts(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), content TEXT NOT NULL, sha256 TEXT NOT NULL, origin TEXT NOT NULL, created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pdfs(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), name TEXT NOT NULL, origin TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, license TEXT, created TEXT NOT NULL, UNIQUE(paper_id,sha256));
 CREATE TABLE IF NOT EXISTS assessments(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), fields TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, entity_id TEXT, detail TEXT NOT NULL, created TEXT NOT NULL);
 INSERT OR IGNORE INTO schema_version VALUES(2);
