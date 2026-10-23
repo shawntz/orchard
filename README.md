@@ -33,7 +33,7 @@ There is no build or install step. Run commands from the directory containing th
 
 1. **Project & criteria:** enter the research question in your own words. Configure inclusion and exclusion criteria before screening. They are not inferred from example search restrictions.
 2. **Search planner:** select the imported document, inspect its original wording and proposed concept groups. If starting from a clean Git clone, import the search terms `.txt` file through this page.
-3. Choose terms from up to five groups, then generate a draft. OR joins terms within groups; AND joins the groups. You can also enter an exact Europe PMC query manually.
+3. Tick a group to select all of its terms (or pick terms individually, filter by keyword, or Shift-click a range), then generate a draft. Any number of groups can be combined. OR joins terms within groups; AND joins the groups. You can also enter an exact Europe PMC query manually.
 4. Review the exact query. Use **Approve as a new version**, then **Run search**. Default retrieval is capped at 300 records per attempt. No queries are run merely by importing a document or approving it.
 5. **Search history:** inspect progress. A cap or failure is recorded as partial/failed, never complete. **Resume** continues an incomplete run; **Run fresh search** creates a new run. Reuse does not rerun a search.
 6. **Paper library:** open a paper. Inspect its source records and discovery history. Screen title/abstract and full text separately. Record an exclusion reason when excluding.

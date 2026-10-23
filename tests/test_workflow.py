@@ -40,6 +40,10 @@ class Workflow(unittest.TestCase):
             with self.assertRaises(ValueError): self.s.import_document('bad.txt',text)
     def test_query_deduplicates_only_exact_normalized_terms(self):
         self.assertEqual(build_query([['Working memory','working memory','short-term memory'],['pupillometry']]), '("Working memory" OR "short-term memory") AND (pupillometry)')
+    def test_query_allows_more_than_five_groups(self):
+        q=build_query([['pupil'],['memory'],['attention'],['emotion'],['workload'],['arousal'],['effort']])
+        self.assertEqual(q,'(pupil) AND (memory) AND (attention) AND (emotion) AND (workload) AND (arousal) AND (effort)')
+        with self.assertRaises(ValueError): build_query([])
     def test_generated_plan_reproducible_with_provenance(self):
         doc=self.s.document(self.s.import_document('t','Pupil\n\tpupillometry; pupil size\nMemory\n\tmemory; retrieval')['id'])
         ids=[[t['id'] for t in c['terms']] for c in doc['concepts']]
