@@ -61,7 +61,8 @@ class Transport:
         self.lock = threading.Lock()
         self.last = 0.0
 
-    def get(self, url, limit=8_000_000, callback=None, headers=None):
+    def get(self, url, limit=8_000_000, callback=None, headers=None, truncate=False):
+        """Fetch at most ``limit`` bytes. ``truncate`` returns the prefix instead of failing (range probes)."""
         public_url(url)
         contact = os.environ.get('ORCHARD_CONTACT_EMAIL')
         agent = 'Orchard/0.2 (local research tool' + ('; mailto:' + contact if contact else '') + ')'
@@ -73,7 +74,9 @@ class Transport:
                 req = Request(url, headers={'User-Agent': agent, 'Accept': 'application/json, application/xml, application/pdf, text/html;q=0.8, */*;q=0.5', **(headers or {})})
                 with build_opener(SafeRedirect()).open(req, timeout=12) as response:
                     data = response.read(limit + 1)
-                    if len(data) > limit:
+                    if len(data) > limit and truncate:
+                        data = data[:limit]
+                    elif len(data) > limit:
                         raise ValueError('Response exceeds safe size limit.')
                     return data, response.geturl(), dict(response.headers)
             except (HTTPError, URLError, TimeoutError, OSError) as exc:

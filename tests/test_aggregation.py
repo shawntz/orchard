@@ -222,7 +222,7 @@ class Aggregation(unittest.TestCase):
         Database(self.path)
         with sqlite3.connect(self.path) as c:
             self.assertIn('batch_id', [r[1] for r in c.execute('PRAGMA table_info(runs)')])
-            self.assertEqual(max(r[0] for r in c.execute('SELECT version FROM schema_version')), 2)
+            self.assertEqual(max(r[0] for r in c.execute('SELECT version FROM schema_version')), 3)
             c.execute('SELECT * FROM files')
         self.service([EPMC()])
 

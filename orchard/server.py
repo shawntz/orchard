@@ -61,6 +61,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200,data,'application/pdf',row['sha256'][:16]+'.pdf')
         if path=='/api/resources':
             return self.send(200,s.db.rows('SELECT r.*,p.title FROM resources r JOIN papers p ON p.id=r.paper_id ORDER BY r.rowid DESC'))
+        if path=='/api/eyelink': return self.send(200,s.eyelink_scans())
+        if path.startswith('/api/eyelink/'): return self.send(200,s.eyelink_scan(path.split('/')[-1]))
         if path=='/api/audit':
             page=max(1,int(args.get('page',1)))
             q=args.get('q','')
@@ -110,6 +112,8 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/fulltext': return s.import_fulltext(**b)
         if path=='/api/fetch-fulltext': return s.fetch_fulltext(b['id'])
         if path=='/api/resource': return s.resource_action(**b)
+        if path=='/api/eyelink-scan': return s.scan_eyelink(b['id'],b.get('pdf_url'))
+        if path=='/api/eyelink-scan-all': return s.scan_eyelink_batch(b.get('scope','unscanned'),b.get('limit',200))
         raise KeyError('Unknown API operation.')
 
 

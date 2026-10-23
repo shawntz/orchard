@@ -3,6 +3,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +15,7 @@ from . import pdftext
 from .db import Database, SCHEMA_VERSION, now, uid, dump, audit
 from .terms import parse_document, normalize, build_query
 from .providers import NORMALIZERS, PDF_LIMIT, Transport, build_providers, normalize_epmc, pmcid_normalize, require_portable
+from . import eyelink
 
 
 class Conflict(ValueError):
@@ -47,12 +49,15 @@ def title_key(value):
 
 REPOS = ('osf.io', 'zenodo.org', 'datadryad.org', 'figshare.com', 'openneuro.org', 'github.com',
          'gitlab.com', 'data.mendeley.com', 'dataverse.harvard.edu', 'gin.g-node.org')
+SCAN_SCOPES = ('unscanned', 'all', 'included')
+MAX_REPOSITORIES = 15
+DATA_CONTEXT = re.compile(r'\b(data|dataset|datasets|available|availability|deposited|repository|raw|eye[- ]?tracking|eyelink|pupil)', re.I)
 FIELDS = ('target_finding', 'dataset_identity', 'data_level', 'timing_metadata', 'acquisition',
           'original_workflow', 'confounds', 'reuse_feasibility')
 
 
 class Service:
-    def __init__(self, path, provider=None, providers=None, locators=None):
+    def __init__(self, path, provider=None, transport=None, providers=None, locators=None):
         self.db = Database(path)
         self.files = Path(path).parent / 'files'
         if provider is None and providers is None:
@@ -63,6 +68,9 @@ class Service:
         self.provider = provider or self.providers.get('europepmc') or next(iter(self.providers.values()))
         self.locators = locators or []
         self.fetcher = Transport()
+        # Shared, rate-limited client for PDFs and repository APIs.
+        self.web = transport or getattr(self.provider, 'transport', None) or Transport()
+        self.scan_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='orchard')
         self.jobs = set()
         self.jobs_lock = threading.Lock()
@@ -71,12 +79,15 @@ class Service:
             for row in c.execute("SELECT id FROM runs WHERE status IN ('queued','running')").fetchall():
                 c.execute("UPDATE runs SET status='interrupted',error='Application stopped during search; resume explicitly.' WHERE id=?", (row['id'],))
                 audit(c, 'search_interrupted', row['id'])
+            for row in c.execute("SELECT id FROM eyelink_scans WHERE status IN ('queued','running')").fetchall():
+                c.execute("UPDATE eyelink_scans SET status='interrupted',error='Application stopped during the scan; start a new scan.' WHERE id=?", (row['id'],))
+                audit(c, 'eyelink_scan_interrupted', row['id'])
 
     def close(self):
         self.pool.shutdown(wait=True)
 
     def require(self, table, id):
-        if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources'):
+        if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources', 'eyelink_scans'):
             raise ValueError('Invalid entity')
         row = self.db.one(f'SELECT * FROM {table} WHERE id=?', (id,))
         if not row:
@@ -200,14 +211,14 @@ class Service:
         runs = [self.require('runs', id) for id in ids]
         return {'run': runs[0], 'runs': runs, 'reused': False}
 
-    def submit(self, id):
+    def submit(self, id, target=None):
         with self.jobs_lock:
             if id in self.jobs:
                 raise Conflict('This search is already running.')
             self.jobs.add(id)
         def job():
             try:
-                self.execute(id)
+                (target or self.execute)(id)
             finally:
                 with self.jobs_lock:
                     self.jobs.discard(id)
@@ -389,6 +400,7 @@ class Service:
         paper['discoveries'] = self.db.rows(f'SELECT d.*,r.query,r.provider,r.status FROM discoveries d JOIN source_records s ON s.id=d.source_record_id JOIN runs r ON r.id=d.run_id WHERE s.paper_id IN ({marks})', ids)
         paper['identifiers'] = self.db.rows(f'SELECT * FROM identifiers WHERE paper_id IN ({marks})', ids)
         paper['relationships'] = self.db.rows(f'SELECT * FROM relationships WHERE a IN ({marks}) OR b IN ({marks})', ids+ids)
+        paper['eyelink_scans'] = [self.eyelink_scan(r['id']) for r in self.db.rows(f'SELECT id FROM eyelink_scans WHERE paper_id IN ({marks}) ORDER BY rowid DESC LIMIT 3', ids)]
         return paper
 
     def save_criteria(self, inclusion, exclusion):
@@ -622,6 +634,159 @@ class Service:
             audit(c,'resource_'+action,id,{'before':r,'status':status,'note':detail})
         return self.require('resources',id)
 
+    # ---- EyeLink data finder: PDF -> repository links -> repository file listings ----
+
+    def scan_eyelink(self, id, pdf_url=None, background=True):
+        paper = self.require('papers', id)
+        id = paper['merged_into'] or id
+        if pdf_url is not None and not isinstance(pdf_url, str):
+            raise ValueError('PDF URL must be text.')
+        pdf_url = (pdf_url or '').strip() or None
+        if pdf_url and urlsplit(pdf_url).scheme not in ('http', 'https'):
+            raise ValueError('PDF URL must start with http:// or https://.')
+        with self.scan_lock:
+            if self.db.one("SELECT id FROM eyelink_scans WHERE paper_id=? AND status IN ('queued','running')", (id,)):
+                raise Conflict('An EyeLink scan for this paper is already queued or running.')
+            sid = uid()
+            with self.db.connect() as c:
+                c.execute('INSERT INTO eyelink_scans(id,paper_id,status,created) VALUES(?,?,?,?)', (sid, id, 'queued', now()))
+                audit(c, 'eyelink_scan_queued', sid, {'paper_id': id, 'pdf_url': pdf_url})
+        if background:
+            self.submit(sid, lambda scan_id: self.run_eyelink_scan(scan_id, pdf_url))
+        else:
+            self.run_eyelink_scan(sid, pdf_url)
+        return self.eyelink_scan(sid)
+
+    def scan_eyelink_batch(self, scope='unscanned', limit=200):
+        if scope not in SCAN_SCOPES or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError('Choose scope unscanned, all, or included, and a limit from 1 to 1,000.')
+        where = {'unscanned': "NOT EXISTS(SELECT 1 FROM eyelink_scans s WHERE s.paper_id=p.id AND s.status IN ('queued','running','completed'))",
+                 'all': "NOT EXISTS(SELECT 1 FROM eyelink_scans s WHERE s.paper_id=p.id AND s.status IN ('queued','running'))",
+                 'included': "(SELECT d.decision FROM decisions d WHERE d.paper_id=p.id ORDER BY d.rowid DESC LIMIT 1)='include' AND NOT EXISTS(SELECT 1 FROM eyelink_scans s WHERE s.paper_id=p.id AND s.status IN ('queued','running'))"}[scope]
+        ids = [r['id'] for r in self.db.rows(f'SELECT p.id FROM papers p WHERE p.merged_into IS NULL AND {where} ORDER BY p.created LIMIT ?', (limit,))]
+        queued = 0
+        for pid in ids:
+            try:
+                self.scan_eyelink(pid)
+                queued += 1
+            except Conflict:
+                pass
+        return {'queued': queued, 'scope': scope}
+
+    def eyelink_scan(self, id):
+        scan = self.require('eyelink_scans', id)
+        scan['checks'] = self.db.rows('SELECT * FROM repository_checks WHERE scan_id=? ORDER BY rowid', (id,))
+        for check in scan['checks']:
+            check['files'] = self.db.rows('SELECT * FROM repository_files WHERE check_id=? ORDER BY rowid', (check['id'],))
+        return scan
+
+    def eyelink_scans(self):
+        return self.db.rows('SELECT s.*,p.title,p.year,p.doi FROM eyelink_scans s JOIN papers p ON p.id=s.paper_id ORDER BY s.rowid DESC LIMIT 500')
+
+    def run_eyelink_scan(self, sid, pdf_url=None):
+        scan = self.require('eyelink_scans', sid)
+        pid, steps = scan['paper_id'], []
+
+        def step(name, status, detail=''):
+            steps.append({'step': name, 'status': status, 'detail': str(detail)[:2000], 'at': now()})
+            with self.db.connect() as c:
+                c.execute('UPDATE eyelink_scans SET steps=? WHERE id=?', (dump(steps), sid))
+
+        try:
+            with self.db.connect() as c:
+                c.execute("UPDATE eyelink_scans SET status='running' WHERE id=?", (sid,))
+            paper = self.paper(pid)
+            pdf = self.download_pdf(paper, pdf_url, step)
+            if pdf:
+                with self.db.connect() as c:
+                    c.execute('UPDATE eyelink_scans SET pdf_url=?,pdf_path=?,pdf_sha256=? WHERE id=?', (pdf['url'], pdf['path'], pdf['sha256'], sid))
+            pmcid = next((i['value'] for i in paper['identifiers'] if i['kind'] == 'pmcid'), None)
+            if pmcid and not any('fullTextXML' in f['origin'] for f in paper['fulltexts']):
+                try:
+                    self.fetch_fulltext(pid)
+                    step('pmc_fulltext', 'retrieved', pmcid)
+                except ValueError as exc:
+                    step('pmc_fulltext', 'failed', exc)
+            paper = self.paper(pid)
+            corpus = '\n'.join([plain(paper['abstract'])] + [f['content'] for f in paper['fulltexts']] +
+                               [r['url'] + ' ' + r['evidence'] for r in paper['resources'] if r['url']])
+            links = eyelink.find_repository_links(corpus)
+            # Links described as data come first; reference-list software links are checked last, if at all.
+            links.sort(key=lambda link: not DATA_CONTEXT.search(link.evidence))
+            if not links:
+                step('links', 'none', 'No supported data-repository links in the PDF, full text, abstract, or stored resources.')
+            elif len(links) > MAX_REPOSITORIES:
+                step('links', 'capped', f'{len(links)} repository links found; checking the first {MAX_REPOSITORIES}.')
+            budget, token = eyelink.Budget(), os.environ.get('ORCHARD_GITHUB_TOKEN') or os.environ.get('GITHUB_TOKEN')
+            checks = []
+            for link in links[:MAX_REPOSITORIES]:
+                result = eyelink.check_repository(self.web, link, budget, token)
+                checks.append(result)
+                found = sum(eyelink.is_eyelink(f) for f in result['files'])
+                self.store_check(sid, pid, link, result, found)
+                step('repository', result['status'], f"{link.repository} {link.url}: {result['files_listed']} files listed, {found} .edf/.asc candidates")
+            verdict = eyelink.summarize(checks)
+            total = sum(eyelink.is_eyelink(f) for c in checks for f in c['files'])
+            with self.db.connect() as c:
+                c.execute("UPDATE eyelink_scans SET status='completed',result=?,repositories=?,eyelink_files=?,finished=? WHERE id=?", (verdict, len(checks), total, now(), sid))
+                audit(c, 'eyelink_scan_completed', sid, {'paper_id': pid, 'result': verdict, 'repositories': len(checks), 'eyelink_files': total})
+        except Exception as exc:
+            with self.db.connect() as c:
+                c.execute("UPDATE eyelink_scans SET status='failed',error=?,finished=? WHERE id=?", (f'{type(exc).__name__}: {exc}', now(), sid))
+                audit(c, 'eyelink_scan_failed', sid, {'paper_id': pid, 'error': str(exc)})
+
+    def store_check(self, sid, pid, link, result, found):
+        with self.db.connect() as c:
+            cid = uid()
+            c.execute('INSERT INTO repository_checks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', (cid, sid, pid, link.repository, link.identifier, link.url, link.evidence[:2000], result['status'], result['files_listed'], found, dump(result['notes']), now()))
+            for f in result['files']:
+                c.execute('INSERT INTO repository_files VALUES(?,?,?,?,?,?,?,?,?)', (uid(), cid, f['path'], f['size'], f['url'], f['kind'], f['header'], f.get('note'), now()))
+            self.add_resource(c, pid, 'code' if link.repository in ('github', 'gitlab') else 'dataset', link.url, link.evidence, 'EyeLink scan; repository recognized')
+
+    def pdf_candidates(self, paper, pdf_url, step):
+        urls = [pdf_url] if pdf_url else []
+        email = os.environ.get('ORCHARD_UNPAYWALL_EMAIL') or os.environ.get('ORCHARD_CONTACT_EMAIL')
+        if paper['doi'] and email:
+            try:
+                urls += eyelink.unpaywall_pdfs(self.web, paper['doi'], email)
+            except Exception as exc:
+                step('unpaywall', 'failed', f'{type(exc).__name__}: {exc}')
+        for source in paper['sources']:
+            links = json.loads(source['raw']).get('fullTextUrlList', {}).get('fullTextUrl', [])
+            pdfs = [l for l in links if isinstance(l, dict) and l.get('documentStyle') == 'pdf' and isinstance(l.get('url'), str)] if isinstance(links, list) else []
+            urls += [l['url'] for l in sorted(pdfs, key=lambda l: l.get('availabilityCode') not in ('OA', 'F'))]
+        pmcid = next((i['value'] for i in paper['identifiers'] if i['kind'] == 'pmcid'), None)
+        if pmcid and re.fullmatch(r'PMC\d+', pmcid):
+            urls.append(f'https://europepmc.org/articles/{pmcid}?pdf=render')
+        return list(dict.fromkeys(u for u in urls if urlsplit(u).scheme in ('http', 'https')))
+
+    def download_pdf(self, paper, pdf_url, step):
+        stored = next((f for f in paper['fulltexts'] if f['origin'].startswith('PDF: ')), None)
+        if stored and not pdf_url:
+            step('pdf', 'reused', 'PDF text already stored from ' + stored['origin'][5:])
+            return None
+        candidates = self.pdf_candidates(paper, pdf_url, step)
+        if not candidates:
+            step('pdf', 'unavailable', 'No PDF link is known for this paper. Supply a PDF URL to scan it.')
+        for url in candidates[:6]:
+            try:
+                data, final, _ = self.web.get(url, limit=eyelink.PDF_LIMIT, headers={'Accept': 'application/pdf,*/*;q=0.5'})
+                text, uris, engine = eyelink.pdf_text(data)
+            except Exception as exc:
+                step('pdf', 'failed', f'{url}: {type(exc).__name__}: {exc}')
+                continue
+            sha = hashlib.sha256(data).hexdigest()
+            folder = self.db.path.parent / 'pdfs'
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{paper['id']}-{sha[:12]}.pdf"
+            path.write_bytes(data)
+            content = text + ('\n\nLinks embedded in the PDF:\n' + '\n'.join(uris) if uris else '')
+            if content.strip():
+                self.import_fulltext(paper['id'], content[:4_000_000], 'PDF: ' + final)
+            step('pdf', 'downloaded', f'{final} ({len(data):,} bytes; {engine} text extraction; {len(uris)} embedded links' + ('' if text.strip() else '; no extractable text') + ')')
+            return {'url': final, 'path': str(path), 'sha256': sha}
+        return None
+
     def listing(self, q='', page=1, status='', year='', source='', resource_kind=''):
         where=['p.merged_into IS NULL']; args=[]
         if q:
@@ -654,7 +819,8 @@ class Service:
                 'data_links':"SELECT COUNT(*) FROM resources WHERE kind IN ('dataset','code','supplement') AND status<>'rejected'",
                 'merged_records':'SELECT COUNT(*) FROM papers WHERE merged_into IS NOT NULL',
                 'pdfs':'SELECT COUNT(DISTINCT paper_id) FROM files',
-                'screening_events':'SELECT COUNT(*) FROM decisions'
+                'screening_events':'SELECT COUNT(*) FROM decisions',
+                'eyelink_papers':"SELECT COUNT(DISTINCT paper_id) FROM eyelink_scans WHERE result IN ('eyelink_confirmed','eyelink_candidates')"
             }.items(): counts[name]=c.execute(sql).fetchone()[0]
         return {'project':self.db.one('SELECT * FROM project'), 'counts':counts,
                 'criteria':self.db.one('SELECT * FROM criteria ORDER BY rowid DESC LIMIT 1'),
@@ -672,7 +838,7 @@ class Service:
         return rows
 
     def export(self):
-        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','files','assessments','audit')
+        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','files','assessments','eyelink_scans','repository_checks','repository_files','audit')
         with self.db.connect() as c:
             eid=uid(); audit(c,'export_created',eid,{'tables':tables})
             # One read transaction for a consistent snapshot, including this export event.

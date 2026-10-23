@@ -30,13 +30,17 @@ Criteria are immutable document-level versions. Screening records are new events
 
 Resource evidence and origins distinguish provider metadata from abstract or full-text extraction. No repository-search inference is currently performed. URL reachability alone does not verify a public dataset, license, or paper association. A researcher can record confirmation or rejection with a note.
 
+## EyeLink finder
+
+`orchard/eyelink.py` is dependency-free and uses the guarded `Transport` (public hosts only, redirects re-checked, rate limited). A scan is a background job like a search: `eyelink_scans` holds status, verdict, PDF provenance and an ordered step log; `repository_checks` holds each repository link with its evidence passage and listing status; `repository_files` holds `.edf`/`.asc` candidates and archives with their header classification. Repository links are also added to `resources`. Startup marks unfinished scans interrupted. Schema version 2 adds these tables additively.
+
 ## Failure recovery
 
 Every retrieved record is committed independently. A cursor is advanced only after the current page has been ingested. Replaying a partially stored page is idempotent. Failure retains previous results, records the error, and produces failed/partial status. Retrieval caps are partial status; resume continues by another capped batch. Startup marks formerly queued/running jobs interrupted. A fresh search creates a separate run, preserving prior runs. Manual imports are labeled as imports, never as live searches.
 
 ## Schema and future migration
 
-Schema version 2 adds `runs.batch_id` and the `files` table. Initialization creates missing tables, adds the column to a version 1 database, and preserves existing rows. Europe PMC search fingerprints are unchanged, so prior runs can still be reused. Future releases must check this version and apply explicit transactional, additive migrations, backing up the stopped database beforehand; destructive automatic changes are out of scope. Audit triggers reject event updates/deletes. Query-update and screening-update triggers protect histories, in addition to the append-only application paths.
+Schema version 2 adds the EyeLink finder tables; version 3 adds `runs.batch_id` and the `files` table. Initialization creates missing tables, adds the column to an older database, and preserves existing rows. Europe PMC search fingerprints are unchanged, so prior runs can still be reused. Future releases must check this version and apply explicit transactional, additive migrations, backing up the stopped database beforehand; destructive automatic changes are out of scope. Audit triggers reject event updates/deletes. Query-update and screening-update triggers protect histories, in addition to the append-only application paths.
 
 ## Delivery work log
 
