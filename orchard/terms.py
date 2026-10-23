@@ -57,13 +57,13 @@ def quote_term(term):
     # Original values are untouched; these are provider-specific query expressions.
     t = term.strip().strip('“”"').replace('"', '')
     if not t or any(c in t for c in '[]():'):
-        raise ValueError('A selected term contains search syntax. Edit the exact query manually.')
+        raise ValueError(f'The selected term “{term.strip()}” contains search syntax. Deselect it or edit the exact query manually.')
     return '"' + t + '"' if ' ' in t else t
 
 
 def build_query(groups):
-    if not groups or len(groups) > 5:
-        raise ValueError('Select one to five concept groups.')
+    if not groups:
+        raise ValueError('Select at least one concept group.')
     blocks = []
     for terms in groups:
         seen = set()

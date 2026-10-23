@@ -34,7 +34,7 @@ class MockPdfSource:
 class Workflow(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.path=Path(self.tmp.name)/'orchard.sqlite3'
-        self.provider=MockProvider(); self.pdfs=MockPdfSource(); self.s=Service(self.path,self.provider,self.pdfs)
+        self.provider=MockProvider(); self.pdfs=MockPdfSource(); self.s=Service(self.path,self.provider,pdf_source=self.pdfs)
     def tearDown(self): self.s.close(); self.tmp.cleanup()
     def run_records(self,records): return self.s.import_records('synthetic-test.json',records)
     def paper(self,r=None):
@@ -53,6 +53,10 @@ class Workflow(unittest.TestCase):
             with self.assertRaises(ValueError): self.s.import_document('bad.txt',text)
     def test_query_deduplicates_only_exact_normalized_terms(self):
         self.assertEqual(build_query([['Working memory','working memory','short-term memory'],['pupillometry']]), '("Working memory" OR "short-term memory") AND (pupillometry)')
+    def test_query_allows_more_than_five_groups(self):
+        q=build_query([['pupil'],['memory'],['attention'],['emotion'],['workload'],['arousal'],['effort']])
+        self.assertEqual(q,'(pupil) AND (memory) AND (attention) AND (emotion) AND (workload) AND (arousal) AND (effort)')
+        with self.assertRaises(ValueError): build_query([])
     def test_generated_plan_reproducible_with_provenance(self):
         doc=self.s.document(self.s.import_document('t','Pupil\n\tpupillometry; pupil size\nMemory\n\tmemory; retrieval')['id'])
         ids=[[t['id'] for t in c['terms']] for c in doc['concepts']]
@@ -149,7 +153,7 @@ class Workflow(unittest.TestCase):
     def test_persistence_interruption_recovery(self):
         self.paper()
         with self.s.db.connect() as c: c.execute("UPDATE runs SET status='running'")
-        self.s.close(); self.s=Service(self.path,self.provider,self.pdfs)
+        self.s.close(); self.s=Service(self.path,self.provider,pdf_source=self.pdfs)
         self.assertEqual(self.s.listing()['total'],1); self.assertEqual(self.s.db.rows('SELECT status FROM runs')[0]['status'],'interrupted')
     def test_audit_append_only(self):
         self.paper()

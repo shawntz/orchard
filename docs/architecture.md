@@ -26,13 +26,17 @@ Criteria are immutable document-level versions. Screening records are new events
 
 Resource evidence and origins distinguish provider metadata from abstract or full-text extraction. No repository-search inference is currently performed. URL reachability alone does not verify a public dataset, license, or paper association. A researcher can record confirmation or rejection with a note.
 
+## EyeLink finder
+
+`orchard/eyelink.py` is dependency-free and uses the guarded `Transport` (public hosts only, redirects re-checked, rate limited). A scan is a background job like a search: `eyelink_scans` holds status, verdict, PDF provenance and an ordered step log; `repository_checks` holds each repository link with its evidence passage and listing status; `repository_files` holds `.edf`/`.asc` candidates and archives with their header classification. Repository links are also added to `resources`. Startup marks unfinished scans interrupted. Schema version 2 adds these tables additively.
+
 ## Failure recovery
 
 Every retrieved record is committed independently. A cursor is advanced only after the current page has been ingested. Replaying a partially stored page is idempotent. Failure retains previous results, records the error, and produces failed/partial status. Retrieval caps are partial status; resume continues by another capped batch. Startup marks formerly queued/running jobs interrupted. A fresh search creates a separate run, preserving prior runs. Manual imports are labeled as imports, never as live searches.
 
 ## Schema and future migration
 
-Schema version 1 is stored in `schema_version`; initialization creates missing tables and preserves existing rows. There is no version 2 migration yet. Future releases must check this version and apply explicit transactional, additive migrations, backing up the stopped database beforehand; destructive automatic changes are out of scope. Audit triggers reject event updates/deletes. Query-update and screening-update triggers protect histories, in addition to the append-only application paths.
+Schema versions 1 and 2 are recorded in `schema_version`; initialization creates missing tables and preserves existing rows. Version 2 only adds the EyeLink finder tables. Future releases must check this version and apply explicit transactional, additive migrations, backing up the stopped database beforehand; destructive automatic changes are out of scope. Audit triggers reject event updates/deletes. Query-update and screening-update triggers protect histories, in addition to the append-only application paths.
 
 ## Delivery work log
 

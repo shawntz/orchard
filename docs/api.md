@@ -31,12 +31,18 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | GET `/pdfs/{id}` | — | Stored PDF, served inline for the reader |
 | GET `/resources` | — | Resource inventory with evidence and status |
 | POST `/resource` | `id`, `action` (`verify`, `confirm`, `reject`), `note` | Resource status; confirm/reject require notes |
+| POST `/eyelink-scan` | `id`, optional `pdf_url` | Queue an EyeLink scan for one paper; 409 if one is already running |
+| POST `/eyelink-scan-all` | `scope` (`unscanned`, `included`, `all`), optional `limit` (1–1000) | `queued` count |
+| GET `/eyelink` | — | Scans, newest first, with paper title, verdict and counts |
+| GET `/eyelink/{id}` | — | Scan steps, repository checks, evidence, and `.edf`/`.asc`/archive rows |
 | GET `/audit` | `page`, `q` | Newest-first events, 100/page |
 | GET `/export` | optional `format=json` | ZIP (CSV + JSON + report), or JSON |
 
 Title/abstract decisions: `include`, `exclude`, `uncertain`, `needs_information`.
 Full-text decisions: `include`, `exclude`, `uncertain`, `awaiting_fulltext`, `inaccessible`.
 `include` at title/abstract means advance to full-text review, not final study inclusion.
+
+EyeLink verdicts: `eyelink_confirmed`, `eyelink_candidates`, `archives_unchecked`, `none_found`, `no_repository_links`, `incomplete`. File headers: `eyelink`, `european_data_format`, `unrecognized`, `not_probed`, `probe_failed`, `git_lfs_pointer`, `git_annex_pointer`; archives: `listed`, `not_inspected`, `inspect_failed`.
 
 Feasibility keys: `target_finding`, `dataset_identity`, `data_level`, `timing_metadata`, `acquisition`, `original_workflow`, `confounds`, `reuse_feasibility`.
 
