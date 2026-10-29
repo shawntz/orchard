@@ -5,6 +5,8 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
@@ -13,6 +15,8 @@ from urllib.parse import urlsplit
 from .db import Database, now, uid, dump, audit
 from .terms import parse_document, normalize, build_query
 from .providers import EuropePMC, Transport, normalize_epmc
+from .repository_sweep import RepositorySweep, DEFAULT_TERMS, classify
+from . import discovery
 from . import eyelink
 
 
@@ -51,6 +55,9 @@ FIELDS = ('target_finding', 'dataset_identity', 'data_level', 'timing_metadata',
 class Service:
     def __init__(self, path, provider=None, transport=None):
         self.db = Database(path)
+        discovery.setup(self)
+        with self.db.connect() as c:
+            c.execute("UPDATE discovery_jobs SET status='interrupted',error='Orchard stopped; rerun this search.' WHERE status IN ('queued','searching','reading_documentation')")
         self.provider = provider or EuropePMC()
         # Shared, rate-limited client for PDFs and repository APIs.
         self.web = transport or getattr(self.provider, 'transport', None) or Transport()
@@ -670,8 +677,107 @@ class Service:
                 'runs':self.db.rows('SELECT * FROM runs ORDER BY rowid DESC LIMIT 8'),
                 'provider':{'name':'Europe PMC','configured':True,'live_verified':False,'note':'No API key required. Live access depends on your network. Check each run status.'}}
 
+    def repository_sweep(self, query, repositories=None, terms=None, max_pages=2, adapter=None):
+        if not isinstance(query, str) or not query.strip() or len(query)>160:
+            raise ValueError('Provide a short repository metadata search query.')
+        repositories = repositories if repositories is not None else ['osf','dryad','zenodo','github']
+        if not isinstance(repositories, list) or not repositories or len(set(repositories)) != len(repositories) or any(r not in ('osf','dryad','zenodo','github') for r in repositories):
+            raise ValueError('Choose distinct supported repositories.')
+        terms = terms if terms is not None else list(DEFAULT_TERMS)
+        if not isinstance(terms, list) or not terms or len(terms)>60 or any(not isinstance(t,str) or not t.strip() or len(t)>80 for t in terms):
+            raise ValueError('Provide 1–60 non-empty screening phrases, at most 80 characters each.')
+        max_pages=int(max_pages)
+        if not 1<=max_pages<=10:
+            raise ValueError('Choose between 1 and 10 pages per repository.')
+        sweep_id=uid(); errors=[]; adapter=adapter or RepositorySweep(getattr(self.provider,'transport',None))
+        with self.db.connect() as c:
+            c.execute('INSERT INTO sweep_runs VALUES(?,?,?,?,?,?,?)',(sweep_id,query.strip(),dump(terms),now(),None,'running','[]'))
+            audit(c,'repository_sweep_started',sweep_id,{'query':query,'repositories':repositories,'max_pages':max_pages,'terms':terms})
+        for repo in repositories:
+            try:
+                for project in adapter.search(repo,query,max_pages):
+                    if not project['files']:
+                        continue
+                    pid=uid(); matches=classify((project.get('title') or '')+'\n'+(project.get('description') or ''),terms)
+                    with self.db.connect() as c:
+                        c.execute('INSERT OR IGNORE INTO sweep_projects VALUES(?,?,?,?,?,?,?,?)',(pid,repo,project['id'],project['url'],project.get('title'),project.get('description'),project.get('doi'),None))
+                        pid=c.execute('SELECT id FROM sweep_projects WHERE repository=? AND external_id=?',(repo,project['id'])).fetchone()['id']
+                        for file in project['files']:
+                            c.execute('INSERT OR IGNORE INTO sweep_files VALUES(?,?,?,?,?,?)',(uid(),pid,file['path'],file.get('url'),file.get('size'),file['extension']))
+                        c.execute('INSERT OR REPLACE INTO sweep_findings VALUES(?,?,?,?,?,?)',(sweep_id,pid,matches['status'],matches['reason'],dump(matches['evidence']),matches['text_source']))
+                        audit(c,'repository_project_found',pid,{'sweep_id':sweep_id,'repository':repo,'files':len(project['files']),'status':matches['status']})
+            except Exception as exc:
+                errors.append({'repository':repo,'error':str(exc)[:500]})
+        with self.db.connect() as c:
+            c.execute('UPDATE sweep_runs SET finished=?,status=?,errors=? WHERE id=?',(now(),'partial' if errors else 'completed',dump(errors),sweep_id))
+            audit(c,'repository_sweep_finished',sweep_id,{'errors':errors})
+        return self.repository_results(sweep_id)
+
+    def repository_results(self, sweep_id):
+        sweep=self.db.one('SELECT * FROM sweep_runs WHERE id=?',(sweep_id,))
+        if not sweep: raise KeyError('Sweep not found.')
+        projects=self.db.rows('SELECT p.*,f.status,f.reason,f.evidence,f.text_source FROM sweep_findings f JOIN sweep_projects p ON p.id=f.project_id WHERE f.sweep_id=? ORDER BY p.repository,p.title',(sweep_id,))
+        for p in projects:
+            p['files']=self.db.rows('SELECT path,url,size,extension FROM sweep_files WHERE project_id=? ORDER BY path',(p['id'],))
+            p['evidence']=json.loads(p['evidence'])
+            p['article_review']=self.db.one('SELECT * FROM sweep_article_reviews WHERE project_id=? ORDER BY created DESC LIMIT 1',(p['id'],))
+        return {'sweep':sweep,'counts':{'projects_with_files':len(projects),'candidate':sum(p['status']=='candidate' for p in projects),'needs_review':sum(p['status']=='review' for p in projects)},'projects':projects,
+                'coverage_note':'Bounded metadata queries and public file listings only; this is not an exhaustive census or a PRISMA study flow. No project is automatically excluded.'}
+
+    def review_repository_article(self, project_id, terms=None):
+        """On demand: resolve a publication DOI, prefer a PDF, then PMC XML."""
+        project=self.db.one('SELECT * FROM sweep_projects WHERE id=?',(project_id,))
+        if not project: raise KeyError('Repository project not found.')
+        terms=terms if terms is not None else list(DEFAULT_TERMS)
+        if not isinstance(terms,list) or not terms or len(terms)>60 or any(not isinstance(t,str) or not t.strip() or len(t)>80 for t in terms):
+            raise ValueError('Provide 1–60 screening phrases.')
+        doi=doi_normalize(project['doi']); article_url=None; pdf_path=None; source='unavailable'; text=''; notes=[]
+        if doi:
+            try:
+                page=self.provider.page('DOI:"'+doi.replace('"','')+'"',size=10)
+                record=next((r for r in page.records if doi_normalize(r.get('doi'))==doi),None)
+                if record:
+                    article_url='https://doi.org/'+doi
+                    links=record.get('fullTextUrlList',{}).get('fullTextUrl',[])
+                    if shutil.which('pdftotext'):
+                        for link in links if isinstance(links,list) else []:
+                            url=link.get('url','') if isinstance(link,dict) else ''
+                            if not url.startswith('https://') or not (url.lower().split('?')[0].endswith('.pdf') or link.get('documentStyle')=='pdf'):
+                                continue
+                            try:
+                                data,_,_=self.provider.transport.get(url,limit=30_000_000)
+                                if not data.startswith(b'%PDF-'): continue
+                                folder=self.db.path.parent/'pdfs'; folder.mkdir(exist_ok=True)
+                                target=folder/(uid()+'.pdf'); target.write_bytes(data)
+                                result=subprocess.run(['pdftotext','-layout',str(target),'-'],capture_output=True,timeout=45,check=True)
+                                text=result.stdout.decode('utf-8',errors='replace')[:4_000_000]
+                                pdf_path=str(target.relative_to(self.db.path.parent)); source='pdf:'+url
+                                break
+                            except (ValueError,OSError,subprocess.SubprocessError) as exc:
+                                notes.append('PDF retrieval or extraction failed: '+str(exc)[:180])
+                    if not text and record.get('pmcid'):
+                        text,source=self.provider.fulltext(record['pmcid'])
+                    if not text:
+                        text=plain(record.get('abstractText'))
+                        if text: source='europepmc_abstract'
+                else: notes.append('No Europe PMC record with the exact publication DOI.')
+            except Exception as exc:
+                notes.append('Article lookup or text retrieval failed: '+str(exc)[:180])
+        else: notes.append('Repository metadata has no linked publication DOI.')
+        result=classify(text,terms,source)
+        if not text:
+            result.update(status='insufficient_text',reason='No article text retrieved; do not exclude.' )
+        elif source=='europepmc_abstract':
+            result.update(status='review',reason='Abstract only; full-text relevance remains unknown.')
+        if notes: result['reason']+=' '+'; '.join(notes)
+        with self.db.connect() as c:
+            c.execute('INSERT INTO sweep_article_reviews VALUES(?,?,?,?,?,?,?,?,?,?)',(uid(),project_id,doi,article_url,pdf_path,source,result['status'],result['reason'],dump(result['evidence']),now()))
+            audit(c,'repository_article_reviewed',project_id,{'doi':doi,'source':source,'status':result['status'],'reason':result['reason'],'hits':result['hits']})
+        return self.db.one('SELECT * FROM sweep_article_reviews WHERE project_id=? ORDER BY created DESC LIMIT 1',(project_id,))
+
     def export(self):
-        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','assessments','eyelink_scans','repository_checks','repository_files','audit')
+        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','assessments','eyelink_scans','repository_checks','repository_files','sweep_runs','sweep_projects','sweep_files','sweep_findings','sweep_article_reviews','audit')
+        tables+=('discovery_jobs','discovery_observations','discovery_documents','discovery_candidates','discovery_events')
         with self.db.connect() as c:
             eid=uid(); audit(c,'export_created',eid,{'tables':tables})
             # One read transaction for a consistent snapshot, including this export event.

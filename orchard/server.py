@@ -6,6 +6,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from .service import Service, Conflict
+from . import discovery
 
 STATIC=Path(__file__).parent/'static'
 
@@ -21,7 +22,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control','no-store')
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Referrer-Policy','no-referrer')
-        self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'")
         if download: self.send_header('Content-Disposition','attachment; filename="'+download+'"')
         self.end_headers()
         self.wfile.write(body)
@@ -49,6 +50,19 @@ class Handler(BaseHTTPRequestHandler):
         s=self.server.service
         parsed=urlparse(self.path); path=parsed.path; args={k:v[-1] for k,v in parse_qs(parsed.query).items()}
         if path=='/api/overview': return self.send(200,s.overview())
+        if path=='/api/discovery': return self.send(200,discovery.report(s))
+        if path.startswith('/api/discovery/project/'): return self.send(200,discovery.detail(s,path.split('/')[-1]))
+        if path.startswith('/api/reader/'):
+            doc=s.db.one('SELECT * FROM discovery_documents WHERE id=?',(path.split('/')[-1],))
+            if not doc: raise KeyError('Document not found')
+            if '/pdf/' in path:
+                if not doc['pdf_path']: raise KeyError('PDF unavailable')
+                file=s.db.path.parent/'pdfs'/doc['pdf_path']
+                if file.parent.resolve()!=(s.db.path.parent/'pdfs').resolve(): raise ValueError('Invalid PDF path')
+                return self.send(200,file.read_bytes(),'application/pdf')
+            return self.send(200,doc)
+        if path=='/api/repository-sweeps': return self.send(200,s.db.rows('SELECT * FROM sweep_runs ORDER BY started DESC LIMIT 25'))
+        if path.startswith('/api/repository-sweeps/'): return self.send(200,s.repository_results(path.split('/')[-1]))
         if path=='/api/documents': return self.send(200,s.db.rows('SELECT id,name,sha256,created FROM documents ORDER BY rowid DESC'))
         if path.startswith('/api/documents/'): return self.send(200,s.document(path.split('/')[-1]))
         if path=='/api/queries': return self.send(200,s.db.rows('SELECT * FROM queries ORDER BY rowid DESC'))
@@ -68,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
             if args.get('format')=='json':
                 return self.send(200,json.dumps(s.export(),ensure_ascii=False,indent=2).encode(),download='orchard-export.json')
             return self.send(200,s.export_zip(),'application/zip','orchard-export.zip')
-        files={'/':'index.html','/app.js':'app.js','/style.css':'style.css'}
+        files={'/':'index.html','/app.js':'app.js','/discovery.js':'discovery.js','/style.css':'style.css','/discovery.css':'discovery.css'}
         if path in files:
             file=STATIC/files[path]
             kind={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'}[file.suffix]
@@ -94,11 +108,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def post(self,path,b):
         s=self.server.service
+        if path=='/api/discovery/start': return discovery.start(s,b)
+        if path=='/api/discovery/inspect': return discovery.discover(s,b['project_id'],b.get('terms'))
+        if path=='/api/discovery/retrieve': return discovery.retrieve(s,**b)
+        if path=='/api/discovery/decision': return discovery.decision(s,**b)
         if path=='/api/project': return s.set_project(b.get('name',''),b.get('question',''))
         if path=='/api/documents': return s.import_document(b.get('name','Imported text'),b.get('text',''))
         if path=='/api/queries': return s.save_query(**b)
         if path=='/api/generate': return s.generate_query(**b)
         if path=='/api/search': return s.search(**b)
+        if path=='/api/repository-sweeps': return s.repository_sweep(**b)
+        if path=='/api/repository-article-review': return s.review_repository_article(b['project_id'],b.get('terms'))
         if path=='/api/resume': return s.resume(b['id'])
         if path=='/api/records': return s.import_records(b.get('name','Imported records'),b['records'])
         if path=='/api/criteria': return s.save_criteria(b.get('inclusion',''),b.get('exclusion',''))
