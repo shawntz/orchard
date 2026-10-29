@@ -2,28 +2,34 @@
 import argparse
 import json
 import os
+import re
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from .service import Service, Conflict
 from . import discovery
+from .providers import PDF_LIMIT
 
 STATIC=Path(__file__).parent/'static'
+CSP="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+# Browser PDF viewers run as plugins in the response's own document, so a stricter policy would blank them.
+PDF_CSP="frame-ancestors 'self'"
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version='Orchard/0.1'
 
-    def send(self, status, body, kind='application/json; charset=utf-8', download=None):
+    def send(self, status, body, kind='application/json; charset=utf-8', download=None, inline=None, cache='no-store', csp=CSP):
         if not isinstance(body,bytes): body=json.dumps(body,ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header('Content-Type',kind)
         self.send_header('Content-Length',str(len(body)))
-        self.send_header('Cache-Control','no-store')
+        self.send_header('Cache-Control',cache)
         self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Referrer-Policy','no-referrer')
-        self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'")
+        self.send_header('Content-Security-Policy',csp)
         if download: self.send_header('Content-Disposition','attachment; filename="'+download+'"')
+        if inline: self.send_header('Content-Disposition','inline; filename="'+inline+'"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -69,6 +75,11 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/runs': return self.send(200,s.db.rows('SELECT * FROM runs ORDER BY rowid DESC'))
         if path=='/api/papers': return self.send(200,s.listing(**{k:v for k,v in args.items() if k in ('q','page','status','year','source','resource_kind')}))
         if path.startswith('/api/papers/'): return self.send(200,s.paper(path.split('/')[-1]))
+        if path.startswith('/api/pdfs/'):
+            row,data=s.pdf_file(path.split('/')[-1])
+            name=re.sub(r'[^A-Za-z0-9._-]+','_',row['name'])
+            # Stored PDFs are content-addressed and never change, so the browser may keep them.
+            return self.send(200,data,'application/pdf',inline=name if name.lower().endswith('.pdf') else name+'.pdf',cache='private, max-age=86400, immutable',csp=PDF_CSP)
         if path=='/api/duplicates': return self.send(200,s.db.rows('SELECT d.*,a.title title_a,b.title title_b,a.year year_a,b.year year_b,a.doi doi_a,b.doi doi_b FROM duplicates d JOIN papers a ON a.id=d.a JOIN papers b ON b.id=d.b ORDER BY d.rowid DESC'))
         if path=='/api/resources':
             return self.send(200,s.db.rows('SELECT r.*,p.title FROM resources r JOIN papers p ON p.id=r.paper_id ORDER BY r.rowid DESC'))
@@ -92,6 +103,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host(): return
         try:
+            parsed=urlparse(self.path)
+            if re.fullmatch(r'/api/papers/[^/]+/pdf',parsed.path):
+                return self.send(200,self.upload_pdf(parsed))
             if self.headers.get('Content-Type','').split(';')[0]!='application/json':
                 raise ValueError('Send application/json.')
             size=int(self.headers.get('Content-Length','0'))
@@ -105,6 +119,14 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError,TypeError) as e: self.send(400,{'error':str(e)})
         except Exception as e:
             self.log_error('%s',str(e)); self.send(500,{'error':'Internal error. Inspect the local terminal log.'})
+
+    def upload_pdf(self,parsed):
+        if self.headers.get('Content-Type','').split(';')[0]!='application/pdf':
+            raise ValueError('Send the file as application/pdf.')
+        size=int(self.headers.get('Content-Length','0'))
+        if not 0<size<=PDF_LIMIT: raise ValueError('PDF must be between 1 byte and 60 MB.')
+        name=parse_qs(parsed.query).get('name',['article.pdf'])[-1]
+        return self.server.service.store_pdf(parsed.path.split('/')[-2],self.rfile.read(size),name,'Uploaded by researcher: '+name)
 
     def post(self,path,b):
         s=self.server.service
@@ -128,6 +150,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/duplicates': return s.resolve_duplicate(**b)
         if path=='/api/fulltext': return s.import_fulltext(**b)
         if path=='/api/fetch-fulltext': return s.fetch_fulltext(b['id'])
+        if path=='/api/fetch-pdf': return s.fetch_pdf(b['id'])
         if path=='/api/resource': return s.resource_action(**b)
         if path=='/api/eyelink-scan': return s.scan_eyelink(b['id'],b.get('pdf_url'))
         if path=='/api/eyelink-scan-all': return s.scan_eyelink_batch(b.get('scope','unscanned'),b.get('limit',200))

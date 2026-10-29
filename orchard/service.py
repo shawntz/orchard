@@ -11,10 +11,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from html import unescape
+from pathlib import Path
 from urllib.parse import urlsplit
 from .db import Database, now, uid, dump, audit
 from .terms import parse_document, normalize, build_query
-from .providers import EuropePMC, Transport, normalize_epmc
+from .providers import EuropePMC, PMCCloud, PDF_LIMIT, Transport, is_pdf, normalize_epmc
 from .repository_sweep import RepositorySweep, DEFAULT_TERMS, classify
 from . import discovery
 from . import eyelink
@@ -53,7 +54,7 @@ FIELDS = ('target_finding', 'dataset_identity', 'data_level', 'timing_metadata',
 
 
 class Service:
-    def __init__(self, path, provider=None, transport=None):
+    def __init__(self, path, provider=None, transport=None, pdf_source=None):
         self.db = Database(path)
         discovery.setup(self)
         with self.db.connect() as c:
@@ -61,6 +62,8 @@ class Service:
         self.provider = provider or EuropePMC()
         # Shared, rate-limited client for PDFs and repository APIs.
         self.web = transport or getattr(self.provider, 'transport', None) or Transport()
+        self.pdf_source = pdf_source or PMCCloud(self.web)
+        self.pdf_dir = Path(path).parent / 'pdfs'
         self.scan_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='orchard')
         self.jobs = set()
@@ -78,7 +81,7 @@ class Service:
         self.pool.shutdown(wait=True)
 
     def require(self, table, id):
-        if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources', 'eyelink_scans'):
+        if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources', 'pdfs', 'eyelink_scans'):
             raise ValueError('Invalid entity')
         row = self.db.one(f'SELECT * FROM {table} WHERE id=?', (id,))
         if not row:
@@ -356,7 +359,7 @@ class Service:
         paper = self.require('papers', id)
         ids = self.paper_ids(id)
         marks = ','.join('?' for _ in ids)
-        for key, table in [('sources','source_records'),('resources','resources'),('decisions','decisions'),('assessments','assessments'),('fulltexts','fulltexts')]:
+        for key, table in [('sources','source_records'),('resources','resources'),('decisions','decisions'),('assessments','assessments'),('fulltexts','fulltexts'),('pdfs','pdfs')]:
             paper[key] = self.db.rows(f'SELECT * FROM {table} WHERE paper_id IN ({marks}) ORDER BY rowid DESC', ids)
         paper['discoveries'] = self.db.rows(f'SELECT d.*,r.query,r.provider,r.status FROM discoveries d JOIN source_records s ON s.id=d.source_record_id JOIN runs r ON r.id=d.run_id WHERE s.paper_id IN ({marks})', ids)
         paper['identifiers'] = self.db.rows(f'SELECT * FROM identifiers WHERE paper_id IN ({marks})', ids)
@@ -456,6 +459,68 @@ class Service:
             with self.db.connect() as c:
                 audit(c,'fulltext_retrieval_failed',id,{'error':str(exc),'pmcid':pmcid})
             raise ValueError('Full text could not be retrieved: '+str(exc)) from exc
+
+    def store_pdf(self, id, data, name, origin, license=None, detail=None):
+        self.require('papers', id)
+        if not is_pdf(data):
+            raise ValueError('The file is not a PDF.')
+        if len(data) > PDF_LIMIT:
+            raise ValueError('PDFs are limited to 60 MB.')
+        sha = hashlib.sha256(data).hexdigest()
+        ids = self.paper_ids(id)
+        marks = ','.join('?' for _ in ids)
+        existing = self.db.one(f'SELECT * FROM pdfs WHERE sha256=? AND paper_id IN ({marks})', [sha]+ids)
+        if existing:
+            return {'pdf': existing, 'reused': True}
+        # Content-addressed files: identical bytes are stored once; rows keep per-paper provenance.
+        self.pdf_dir.mkdir(parents=True, exist_ok=True)
+        file = self.pdf_dir / (sha + '.pdf')
+        if not file.exists():
+            tmp = file.with_suffix('.tmp-' + uid())
+            tmp.write_bytes(data)
+            os.replace(tmp, file)
+        name = re.sub(r'[\x00-\x1f/\\]+', '_', Path(str(name or '')).name).strip()[:200] or 'article.pdf'
+        pid = uid()
+        with self.db.connect() as c:
+            c.execute('INSERT INTO pdfs VALUES(?,?,?,?,?,?,?,?)', (pid, id, name, origin, sha, len(data), license, now()))
+            audit(c, 'pdf_stored', id, {'pdf_id': pid, 'origin': origin, 'sha256': sha, 'size': len(data), 'license': license, **(detail or {})})
+        return {'pdf': self.require('pdfs', pid), 'reused': False}
+
+    def pdf_file(self, id):
+        row = self.require('pdfs', id)
+        file = self.pdf_dir / (row['sha256'] + '.pdf')
+        if not re.fullmatch(r'[0-9a-f]{64}', row['sha256']) or not file.is_file():
+            raise KeyError('The PDF file is missing from the data folder.')
+        return row, file.read_bytes()
+
+    def pdf_routes(self, paper):
+        """Open-access routes in order of reliability: PMC dataset, then provider-listed PDF links."""
+        found = [('pmc', i['value']) for i in paper['identifiers'] if i['kind'] == 'pmcid' and re.fullmatch(r'PMC\d+', i['value'])]
+        for source in paper['sources']:
+            links = json.loads(source['raw']).get('fullTextUrlList', {}).get('fullTextUrl', [])
+            for link in links if isinstance(links, list) else []:
+                if isinstance(link, dict) and link.get('documentStyle') == 'pdf' and isinstance(link.get('url'), str) and link['url'].startswith(('https://', 'http://')):
+                    found.append(('url', link['url']))
+        return list(dict.fromkeys(found))[:6]
+
+    def fetch_pdf(self, id):
+        paper = self.paper(id)
+        candidates = self.pdf_routes(paper)
+        if not candidates:
+            raise ValueError('No PMCID or open-access PDF link is recorded for this paper. Download it through your library and upload the PDF.')
+        attempts = []
+        for kind, value in candidates:
+            try:
+                if kind == 'pmc':
+                    data, url, info = self.pdf_source.pdf(value, lambda d: self.request_event(id, d))
+                    return self.store_pdf(id, data, info['version'] + '.pdf', url, info.get('license'), {'source': 'PMC article dataset', **info})
+                data, url = self.pdf_source.download(value, lambda d: self.request_event(id, d))
+                return self.store_pdf(id, data, Path(urlsplit(url).path).name or 'article.pdf', url, None, {'source': 'Provider full-text link', 'listed_url': value})
+            except Exception as exc:
+                attempts.append({'source': value, 'error': str(exc)})
+        with self.db.connect() as c:
+            audit(c, 'pdf_retrieval_failed', id, {'attempts': attempts})
+        raise ValueError('No open-access PDF could be retrieved (' + '; '.join(a['source'] + ': ' + a['error'] for a in attempts) + '). Download it through your library and upload the PDF.')
 
     def resource_action(self, id, action, note=''):
         r=self.require('resources',id)
@@ -776,7 +841,7 @@ class Service:
         return self.db.one('SELECT * FROM sweep_article_reviews WHERE project_id=? ORDER BY created DESC LIMIT 1',(project_id,))
 
     def export(self):
-        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','assessments','eyelink_scans','repository_checks','repository_files','sweep_runs','sweep_projects','sweep_files','sweep_findings','sweep_article_reviews','audit')
+        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','pdfs','assessments','eyelink_scans','repository_checks','repository_files','sweep_runs','sweep_projects','sweep_files','sweep_findings','sweep_article_reviews','audit')
         tables+=('discovery_jobs','discovery_observations','discovery_documents','discovery_candidates','discovery_events')
         with self.db.connect() as c:
             eid=uid(); audit(c,'export_created',eid,{'tables':tables})
@@ -784,7 +849,8 @@ class Service:
             data={t:[dict(r) for r in c.execute('SELECT * FROM '+t)] for t in tables}
         data['manifest']={'schema_version':2,'application_version':'0.1.0','exported_at':now(),
                           'counts':{'papers': sum(p['merged_into'] is None for p in data['papers']), 'source_records':len(data['source_records']), 'discovery_events':len(data['discoveries']), 'screening_events':len(data['decisions'])},
-                          'study_count':None,'prisma_note':'Records and reports are tracked. Studies are not mapped; study counts and a complete PRISMA diagram are not available.'}
+                          'study_count':None,'prisma_note':'Records and reports are tracked. Studies are not mapped; study counts and a complete PRISMA diagram are not available.',
+                          'pdf_note':'PDF provenance and SHA-256 hashes are exported. PDF files stay in the local data/pdfs folder and are not included.'}
         return data
 
     def export_zip(self):
