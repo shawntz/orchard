@@ -1194,6 +1194,7 @@ def project_detail(s, project_id):
         current.append(f)
     docs = s.db.rows('SELECT id,kind,url,title,status,method,words,quality_reason,pdf_path,created FROM discovery_documents WHERE project_id=? ORDER BY rowid', (project_id,))
     candidates = s.db.rows('SELECT id,doi,url,title,authors,year,venue,kind,strength,origin,evidence,score,created FROM discovery_candidates WHERE project_id=? ORDER BY rowid', (project_id,))
+    candidates.sort(key=lambda c: pubs.RANK.get(c['strength'], 9))
     for cand in candidates:
         cand['authors'] = json.loads(cand['authors'] or '[]')
         cand['evidence'] = json.loads(cand['evidence'] or '[]')

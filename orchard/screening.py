@@ -22,6 +22,8 @@ METHOD_VERSION = '1.0'
 MIN_WORDS = 40
 
 # Default concept lists, taken from docs/search-terms.txt (the project's literature-search terms).
+# EEG is deliberately not an exclusion concept: simultaneous EEG and pupillometry is common, and EEG-format
+# .edf files are recognised from their headers instead.
 DEFAULT_CONCEPTS = {
     'measurement': ['pupillometr*', 'pupil size', 'pupil diameter', 'pupil area', 'pupil dilation', 'pupillary dilation',
                     'pupil dilatation', 'pupillary response', 'pupil response', 'pupil constriction', 'task-evoked pupil*',
@@ -45,7 +47,7 @@ DEFAULT_CONCEPTS = {
         'Pupillary light reflex or ophthalmic measurement only': ['pupillary light reflex', 'neurological pupil index', 'NPi', 'anisocoria', 'ophthalmolog*', 'refractive', 'myopia', 'cataract'],
         'Clinical or pharmacological monitoring': ['anesthesia', 'anaesthesia', 'intensive care', 'ICU', 'opioid', 'sedation', 'traumatic brain injury'],
         'Non-human participants': ['mice', 'mouse', 'rat', 'rats', 'macaque*', 'monkey*', 'rhesus', 'non-human primate*', 'zebrafish', 'drosophila'],
-        'Not eye-tracking data (other EDF/ASC use)': ['polysomnograph*', 'sleep staging', 'electroencephalograph*', 'EEG recording', 'ascii grid', 'raster', 'elevation', 'bathymetr*', 'X-ray', 'diffraction', 'spectroscop*'],
+        'Not eye-tracking data (other EDF/ASC use)': ['polysomnograph*', 'sleep staging', 'ascii grid', 'raster', 'elevation', 'bathymetr*', 'X-ray', 'diffraction', 'spectroscop*'],
         'Software, simulation or test material': ['unit test', 'test file*', 'test data', 'example data', 'simulated data', 'synthetic data', 'demo data', 'toy data'],
     },
 }

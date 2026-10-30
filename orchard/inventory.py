@@ -71,8 +71,9 @@ def classify(path, size=None, header=None, has_package_files=False):
     if eye and size is not None and size < 1024:
         return 'placeholder', f'Only {size} bytes; too small to be a recording.'
     if eye and FIXTURE.search(path):
-        reason = 'Inside a software test folder' + (' of a package' if has_package_files else '') + '; likely a test fixture, not study data.'
-        return 'example_or_fixture', reason
+        if has_package_files:
+            return 'example_or_fixture', 'Inside a software test folder of a package; likely a test fixture, not study data.'
+        return 'example_or_fixture', 'Inside a folder named as a test; likely pilot or test sessions rather than study recordings. Check the README.'
     if eye and EXAMPLE.search(path):
         return 'example_or_fixture', 'Path names it an example, sample, demo or tutorial file.'
     if eye:

@@ -148,7 +148,14 @@ class Publications(Inspected):
         self.assertIsNone(strength)
         self.assertIn('no shared author', why[0])
         self.assertEqual(P.judge({'title': 'Data for: Pupil dilation tracks working memory load', 'creators': ['Jane Doe']},
-                                 {'title': 'Pupil dilation tracks working memory load', 'authors': ['Jane Doe']})[0], 'moderate')
+                                 {'title': 'Pupil dilation tracks working memory load', 'authors': ['Jane Doe']})[0], 'strong')
+        # Real case (OSF 9uyzf): a prolific lab's other papers share one surname and topic words; they must rank below the exact match.
+        project = {'title': 'Concealed identity information detection with pupillometry in rapid serial visual presentation',
+                   'creators': ['Ivory Yining Chen', 'Aytac Karabay', 'Sebastiaan Mathot', 'Howard Bowman', 'Elkan Akyurek']}
+        self.assertEqual(P.judge(project, {'title': project['title'], 'authors': ['I. Y. Chen', 'A. Karabay', 'S. Mathot', 'H. Bowman', 'E. Akyurek']})[0], 'strong')
+        self.assertEqual(P.judge(project, {'title': 'Identity and semantic negative priming in rapid serial visual presentation streams', 'authors': ['Z. Chen']})[0], 'weak')
+        self.assertEqual(P.judge(project, {'title': 'Supplemental Material for X', 'authors': []})[0], None)
+        self.assertTrue(P.is_supplement({'title': 'Supplemental Material for Reading Is Disrupted', 'doi': '10.1037/xhp0000680.supp'}))
 
     def test_confirm_links_paper_library_and_retrieves_article(self):
         self.criteria()
@@ -189,6 +196,15 @@ class Publications(Inspected):
         D.study_action(self.s, second, 'assign', reviewer='A', study_id=study['id'])
         s = D.funnel(self.s)['summary']
         self.assertEqual((s['independent_studies'], s['independent_studies_mapped_so_far']), (1, 1))
+
+    def test_osf_preprint_doi_and_published_version(self):
+        # Shape of a real OSF preprint record: own DOI in links.preprint_doi; attributes.doi is the published article.
+        from repository_fixtures import osf_project
+        pre = {'attributes': {'title': 'Preprint title', 'doi': '10.5555/published.1'}, 'links': {'preprint_doi': 'https://doi.org/10.31234/osf.io/abcde', 'html': 'https://osf.io/preprints/psyarxiv/abcde'}}
+        osf_project(self.web, 'pre11', 'A project with a preprint', '', 'Jane Doe', {'': [('a.asc', ASC)]}, preprints=[pre])
+        related = D.adapters(self.s)['osf'].metadata('pre11')['related']
+        self.assertEqual([(r['relation'], r['identifier']) for r in related],
+                         [('osf_preprint', 'https://doi.org/10.31234/osf.io/abcde'), ('article_doi', '10.5555/published.1')])
 
     def test_manual_dataset_doi_needs_explicit_override(self):
         pid = self.project('osf', 'ctd34')['id']

@@ -28,6 +28,7 @@ neural brain perception perceptual learning working load control spatial tempora
 CONTEXT = re.compile(r'(?i)(this|our|the accompanying|associated|corresponding|related) (paper|article|manuscript|publication|preprint|study)|please cite|cite (this|the following|as)|citation|published (in|as)|described in|reported in|preprint|accepted (in|at|for)|in press')
 STRONG_RELATIONS = {'issupplementto', 'isdocumentedby', 'isdescribedby', 'iscitedby', 'isreferencedby', 'primary_article', 'article', 'article_doi',
                     'osf_preprint', 'preferred-citation', 'issupplementedby', 'issourceof'}
+RANK = {'explicit': 0, 'strong': 1, 'moderate': 2, 'weak': 3, 'mentioned': 4}
 PUBLICATION_TYPES = {'journal-article': 'article', 'proceedings-article': 'article', 'book-chapter': 'article', 'posted-content': 'preprint',
                      'report': 'article', 'dissertation': 'thesis', 'dataset': 'dataset', 'component': 'dataset', 'peer-review': 'other',
                      'book': 'article', 'monograph': 'article'}
@@ -91,13 +92,22 @@ def judge(project, candidate):
     if year.isdigit() and created.isdigit():
         lines.append(f'Published {year}; repository created {created}.')
     if t['exact'] and (authors or len(t['distinctive_project']) >= 3):
-        return 'moderate' if authors else 'weak', lines
+        return 'strong' if authors else 'weak', lines
     if authors and len(t['distinctive_shared']) >= 2 and t['distinctive_coverage'] >= 0.34:
+        # One shared surname is weak evidence (common names, prolific labs publishing on one topic).
+        if len(authors) == 1:
+            return 'weak', lines + ['Only one shared author: often a different paper from the same lab.']
         return 'moderate', lines
     if not authors and len(t['distinctive_shared']) >= 4 and t['distinctive_coverage'] >= 0.75:
         return 'weak', lines + ['No author overlap: confirm against the article before accepting.']
     reason = ('no shared author' if not authors else 'author shared but titles differ') + f"; distinctive words shared: {', '.join(t['distinctive_shared']) or 'none'}"
     return None, [reason]
+
+
+def is_supplement(item):
+    """Publishers such as APA register supplemental material as 'journal-article' records."""
+    return bool(re.match(r'(?i)\s*supplement(al|ary)? (material|information|data)\b', str(item.get('title') or ''))
+                or re.search(r'(?i)\.(supp|suppl)\d*$', str(item.get('doi') or '')))
 
 
 def normalize_doi(value):
@@ -237,7 +247,7 @@ def find(lookup, meta, docs, search=True):
         if not key:
             return
         current = candidates.get(key)
-        rank = {'explicit': 0, 'moderate': 1, 'weak': 2, 'mentioned': 3}
+        rank = RANK
         if current and rank[current['strength']] <= rank[strength]:
             current['evidence'] += [e for e in evidence if e not in current['evidence']]
             current['origin'] += '; ' + origin if origin not in current['origin'] else ''
@@ -279,6 +289,10 @@ def find(lookup, meta, docs, search=True):
         for item in results:
             if item.get('kind') in ('dataset', 'other') or not item.get('title'):
                 continue
+            if is_supplement(item):
+                rejected.append({'source': item['source'], 'doi': item.get('doi'), 'title': item.get('title'), 'year': item.get('year'),
+                                 'reason': 'Supplemental-material record of an article, not the article itself.'})
+                continue
             if item.get('doi') and normalize_doi(item['doi']) == normalize_doi(meta.get('doi')):
                 continue
             strength, lines = judge(project, item)
@@ -286,5 +300,5 @@ def find(lookup, meta, docs, search=True):
                 add(item, strength, f"{item['source']} search by title and contributors", lines)
             else:
                 rejected.append({'source': item['source'], 'doi': item.get('doi'), 'title': item.get('title'), 'year': item.get('year'), 'reason': lines[0]})
-    ordered = sorted(candidates.values(), key=lambda c: {'explicit': 0, 'moderate': 1, 'weak': 2, 'mentioned': 3}[c['strength']])
+    ordered = sorted(candidates.values(), key=lambda c: RANK[c['strength']])
     return {'candidates': ordered, 'non_publications': non_pubs, 'searches': searches, 'rejected': rejected[:25]}

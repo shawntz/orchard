@@ -253,10 +253,14 @@ class OSF:
         if kind == 'nodes':
             try:
                 for pre in self.client.json(f'{OSF_API}/nodes/{guid}/preprints/').get('data', []):
-                    pa = pre.get('attributes', {})
-                    out['related'].append({'relation': 'osf_preprint', 'identifier': pa.get('doi') or (pre.get('links') or {}).get('html'),
-                                           'scheme': 'doi' if pa.get('doi') else 'url', 'resource_type': 'preprint', 'title': pa.get('title'),
-                                           'origin': 'Preprint linked to this OSF project'})
+                    pa, links = pre.get('attributes', {}), pre.get('links') or {}
+                    # links.preprint_doi is the preprint's own DOI; attributes.doi is the published article's DOI, when there is one.
+                    own = links.get('preprint_doi')
+                    out['related'].append({'relation': 'osf_preprint', 'identifier': own or links.get('html'), 'scheme': 'doi' if own else 'url',
+                                           'resource_type': 'preprint', 'title': pa.get('title'), 'origin': 'Preprint linked to this OSF project'})
+                    if pa.get('doi'):
+                        out['related'].append({'relation': 'article_doi', 'identifier': pa['doi'], 'scheme': 'doi', 'resource_type': 'publication',
+                                               'title': None, 'origin': 'Published version of a preprint linked to this OSF project'})
             except Exception:
                 pass
         return out
