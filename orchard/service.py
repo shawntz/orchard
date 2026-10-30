@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from .db import Database, now, uid, dump, audit
 from .terms import parse_document, normalize, build_query
 from .providers import EuropePMC, PMCCloud, PDF_LIMIT, Transport, is_pdf, normalize_epmc
-from . import eyelink
+from . import eyelink, manuscript
 
 
 class Conflict(ValueError):
@@ -771,3 +771,10 @@ class Service:
                            f"Stored: {run['retrieved']} | Provider hit count: {run['total']} | Error: {run['error']}",'']
             z.writestr('search-strategy.txt','\n'.join(report))
         return buffer.getvalue()
+
+    def manuscript_zip(self):
+        """Supplementary tables for a manuscript; see orchard/manuscript.py."""
+        exported_at=now()
+        with self.db.connect() as c:
+            audit(c,'manuscript_export_created',uid(),{'tables':[t[0] for t in manuscript.TABLES]})
+            return manuscript.write_zip(c,exported_at)

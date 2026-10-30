@@ -42,6 +42,7 @@ There is no build or install step. Run commands from the directory containing th
 8. **Full text & data:** retrieve PMC text where available or paste authorized plain text. Candidate links retain supporting passages. A reachable URL is distinct from a researcher-verified dataset. Record licenses and reprocessing feasibility in the Eyeris assessment fields.
 9. **EyeLink finder:** on a paper, choose **Find EyeLink files** (optionally paste a PDF URL), or queue many papers from the **EyeLink finder** page. Orchard downloads the PDF, extracts its text and embedded links, finds data-repository links, lists those repositories, and reports `.edf`/`.asc` files. See [EyeLink finder](#eyelink-finder).
 10. **Audit & export:** download a ZIP containing per-table CSVs, complete JSON, and a readable search-strategy report.
+11. **Manuscript tables:** on **Audit & export**, choose **Download manuscript tables** for supplementary CSVs you can append to a manuscript (see [Manuscript supplementary tables](#manuscript-supplementary-tables)).
 
 When offline, you can still import documents, plan queries, import actual Europe PMC `core` JSON responses, screen records, and export. The record import accepts either `{"resultList":{"result":[...]}}` or a record array. Each record requires `source` and `id`. Missing metadata remains null. Importing a provider file does not claim that Orchard performed a live search.
 
@@ -60,7 +61,27 @@ When offline, you can still import documents, plan queries, import actual Europe
 - [x] `eyeris` reprocessing-feasibility assessment history.
 - [x] EyeLink finder: PDF download, repository-link detection, repository file listings, remote ZIP directories and `.edf`/`.asc` header checks.
 - [x] Filtered, paginated paper library; resource inventory; complete CSV/JSON/history export.
+- [x] Manuscript supplementary tables: search strategy, search terms, criteria versions, PRISMA flow counts, included/excluded reports, screening log, data availability, EyeLink/reuse results, and a data dictionary.
 - [x] Automated workflow tests and a GitHub Actions test configuration.
+
+## Manuscript supplementary tables
+
+**Audit & export → Download manuscript tables** (`GET /api/export/manuscript`) gives `orchard-manuscript-tables.zip`. Unlike the full export, which mirrors the database table by table, these CSVs are one row per search, term, criteria version, PRISMA item or report, with plain column names, ready to attach as supplementary material:
+
+| File | Contents |
+|---|---|
+| `table_s1_search_strategy.csv` | Each search: database, exact query, dates, status, hit count, records retrieved, cap |
+| `table_s2_search_terms.csv` | Source terms behind each approved query, with concept group and source-document line |
+| `table_s3_eligibility_criteria.csv` | Every criteria version and how many decisions were made under it |
+| `table_s4_prisma_flow.csv` | PRISMA 2020 counts: identified, duplicates removed, screened, excluded, not retrieved, assessed, excluded by reason, included, pending |
+| `table_s5_included_studies.csv` | Included reports: citation fields, formatted reference, decision details, data links, EyeLink verdict, reuse assessment |
+| `table_s6_excluded_full_text.csv` | Reports excluded at full text, with reasons |
+| `table_s7_screening_log.csv` | Every unique record with its latest title/abstract and full-text decision and final status |
+| `table_s8_data_availability.csv` | Dataset, code, supplement, protocol and availability-statement links with verification status |
+| `table_s9_eyelink_and_reuse.csv` | Latest EyeLink scan and eyeris reuse assessment per record |
+| `data_dictionary.csv` | Description of every column |
+
+Counts use the latest decision per record and stage, with merged duplicates' history included. They are counts of reports, not studies: *Studies included* is left blank because Orchard does not map reports to studies. Rows are numbered in reference-list order (first author, year) and keep their Orchard ID for tracing back to the full export. Files are UTF-8 with a byte-order mark so Excel shows accented names correctly; in R use `readr::read_csv` or `read.csv(..., fileEncoding = "UTF-8-BOM")`.
 
 ## EyeLink finder
 
