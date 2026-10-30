@@ -201,6 +201,52 @@ class Jobs(Base):
                 D.start(self.s, {'sources': ['osf'], 'phrases': ['x'], **bad}, background=False)
 
 
+class PageLoad(Base):
+    """The search, project-list and funnel views must not run queries per project (a 3,000-project
+    workspace took over a minute to open while a search ran). See scripts/perf_repository_page.py."""
+
+    def add_projects(self, n, offset):
+        with self.s.db.connect() as c:
+            for i in range(offset, offset + n):
+                pid = 'bulk%05d' % i
+                c.execute("INSERT INTO sweep_projects(id,repository,external_id,url,title,first_seen,match_status,last_inspected) VALUES(?,?,?,?,?,datetime('now'),'eyelink_confirmed',datetime('now'))",
+                          (pid, 'osf', pid, 'https://osf.io/x/', 'Bulk project'))
+                c.execute("INSERT INTO relevance_assessments(id,project_id,status,created) VALUES(?,?,'needs_review',datetime('now'))", ('a' + pid, pid))
+                c.execute("INSERT INTO discovery_candidates(id,project_id,doi,title,created,strength) VALUES(?,?,?,?,datetime('now'),'weak')", ('c' + pid, pid, '10.1/' + pid, 't'))
+
+    def calls(self, fn):
+        count = {'n': 0}
+        rows, one = self.s.db.rows, self.s.db.one
+        def counted(real):
+            def wrapper(*a, **k):
+                count['n'] += 1
+                return real(*a, **k)
+            return wrapper
+        with mock.patch.object(self.s.db, 'rows', counted(rows)), mock.patch.object(self.s.db, 'one', counted(one)):
+            fn()
+        return count['n']
+
+    def test_query_count_does_not_grow_with_projects(self):
+        self.run_search(max_projects=0)
+        self.add_projects(20, 0)
+        views = {'overview': lambda: D.overview(self.s), 'projects': lambda: D.projects(self.s, match='with_files'), 'funnel': lambda: D.funnel(self.s)}
+        small = {k: self.calls(v) for k, v in views.items()}
+        self.add_projects(200, 20)
+        large = {k: self.calls(v) for k, v in views.items()}
+        self.assertEqual(small, large)
+        self.assertEqual(D.projects(self.s, match='with_files')['total'], 220)
+        self.assertEqual(D.funnel(self.s)['summary']['relevance']['needs_review'], 220)
+        self.assertEqual(D.overview(self.s)['counts']['projects_header_confirmed'], 220)
+
+    def test_project_lookups_use_indexes(self):
+        for table, column in (('relevance_assessments', 'project_id'), ('discovery_documents', 'project_id'), ('publication_searches', 'project_id'),
+                              ('publication_decisions', 'candidate_id'), ('discovery_observations', 'project_id')):
+            plan = ' '.join(r['detail'] for r in self.s.db.rows(f'EXPLAIN QUERY PLAN SELECT * FROM {table} WHERE {column}=?', ('x',)))
+            self.assertIn('USING INDEX', plan, table)
+        plan = ' '.join(r['detail'] for r in self.s.db.rows("EXPLAIN QUERY PLAN SELECT * FROM study_links WHERE kind='project' AND ref_id=?", ('x',)))
+        self.assertIn('USING INDEX', plan)
+
+
 class Client(unittest.TestCase):
     def test_paces_requests_per_host(self):
         clock = {'t': 0.0}

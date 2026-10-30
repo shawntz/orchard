@@ -44,6 +44,20 @@ CREATE TABLE IF NOT EXISTS download_batches(id TEXT PRIMARY KEY, project_id TEXT
 CREATE TABLE IF NOT EXISTS downloads(id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, project_id TEXT NOT NULL, file_id TEXT, path TEXT, url TEXT, dest TEXT, expected_size INTEGER, expected_checksum TEXT, bytes_done INTEGER NOT NULL DEFAULT 0, sha256 TEXT, status TEXT NOT NULL, detail TEXT, created TEXT NOT NULL, finished TEXT);
 CREATE TABLE IF NOT EXISTS studies(id TEXT PRIMARY KEY, label TEXT NOT NULL, notes TEXT, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS study_links(id TEXT PRIMARY KEY, study_id TEXT NOT NULL, kind TEXT NOT NULL, ref_id TEXT NOT NULL, reviewer TEXT, note TEXT, created TEXT NOT NULL, removed TEXT);
+CREATE INDEX IF NOT EXISTS relevance_assessments_project ON relevance_assessments(project_id);
+CREATE INDEX IF NOT EXISTS discovery_documents_project ON discovery_documents(project_id);
+CREATE INDEX IF NOT EXISTS discovery_observations_project ON discovery_observations(project_id);
+CREATE INDEX IF NOT EXISTS discovery_observations_task ON discovery_observations(task_id);
+CREATE INDEX IF NOT EXISTS publication_searches_project ON publication_searches(project_id);
+CREATE INDEX IF NOT EXISTS publication_decisions_project ON publication_decisions(project_id);
+CREATE INDEX IF NOT EXISTS publication_decisions_candidate ON publication_decisions(candidate_id);
+CREATE INDEX IF NOT EXISTS project_papers_paper ON project_papers(paper_id);
+CREATE INDEX IF NOT EXISTS retrieval_attempts_paper ON retrieval_attempts(paper_id);
+CREATE INDEX IF NOT EXISTS study_links_ref ON study_links(kind, ref_id);
+CREATE INDEX IF NOT EXISTS download_batches_project ON download_batches(project_id);
+CREATE INDEX IF NOT EXISTS project_inventories_project ON project_inventories(project_id);
+CREATE INDEX IF NOT EXISTS fulltexts_paper ON fulltexts(paper_id);
+CREATE INDEX IF NOT EXISTS pdfs_paper ON pdfs(paper_id);
 CREATE TABLE IF NOT EXISTS project_relations(id TEXT PRIMARY KEY, a TEXT NOT NULL, b TEXT NOT NULL, basis TEXT, status TEXT NOT NULL, reviewer TEXT, reason TEXT, created TEXT NOT NULL, decided TEXT, UNIQUE(a,b));
 '''
 COLUMNS = {
@@ -1108,22 +1122,33 @@ def job_detail(s, job):
     row['tasks'] = s.db.rows('SELECT id,position,source,kind,query,label,coverage,status,pages,records,reported_total,projects,retry_after,error,started,finished,updated FROM discovery_tasks WHERE job_id=? ORDER BY position', (job,))
     row['records_examined'] = sum(t['records'] for t in row['tasks'])
     row['unique_projects'] = s.db.one('SELECT COUNT(DISTINCT project_id) n FROM discovery_observations WHERE job_id=?', (job,))['n'] if row['version'] == 2 else s.db.one('SELECT COUNT(*) n FROM discovery_observations WHERE job_id=?', (job,))['n']
-    ids = [r['project_id'] for r in s.db.rows('SELECT DISTINCT project_id FROM discovery_observations WHERE job_id=? AND project_id IS NOT NULL', (job,))]
-    row['project_status'] = {}
-    if ids:
-        marks = ','.join('?' * len(ids))
-        for r in s.db.rows(f"SELECT COALESCE(match_status,'not_inspected') m, COUNT(*) n FROM sweep_projects WHERE id IN ({marks}) GROUP BY m", ids):
-            row['project_status'][r['m']] = r['n']
+    row['project_status'] = {r['m']: r['n'] for r in s.db.rows(
+        "SELECT COALESCE(p.match_status,'not_inspected') m, COUNT(DISTINCT p.id) n FROM discovery_observations o JOIN sweep_projects p ON p.id=o.project_id "
+        "WHERE o.job_id=? GROUP BY m", (job,))}
     return row
 
 
-def overview(s):
+def overview(s, limit=10):
     setup(s)
-    jobs = [job_detail(s, j['id']) for j in s.db.rows('SELECT id FROM discovery_jobs ORDER BY created DESC LIMIT 30')]
+    jobs = [job_detail(s, j['id']) for j in s.db.rows('SELECT id FROM discovery_jobs ORDER BY created DESC LIMIT ?', (limit,))]
     legacy = s.db.rows('SELECT * FROM sweep_runs ORDER BY started DESC LIMIT 20')
-    return {'jobs': jobs, 'legacy_sweeps': legacy, 'sources': list(repos.SOURCES), 'default_phrases': list(repos.DEFAULT_PHRASES),
+    return {'jobs': jobs, 'more_jobs': max(0, s.db.one('SELECT COUNT(*) n FROM discovery_jobs')['n'] - len(jobs)), 'legacy_sweeps': legacy, 'sources': list(repos.SOURCES), 'default_phrases': list(repos.DEFAULT_PHRASES),
             'tokens': {'github': bool(repos.env('ORCHARD_GITHUB_TOKEN', 'GITHUB_TOKEN')), 'zenodo': bool(repos.env('ORCHARD_ZENODO_TOKEN')), 'dryad': bool(repos.env('ORCHARD_DRYAD_TOKEN'))},
-            'counts': funnel(s)['summary']}
+            'counts': quick_counts(s)}
+
+
+def quick_counts(s):
+    """Headline numbers for the search page, from aggregate queries only."""
+    marks = ','.join('?' * len(MATCHING))
+    included = s.db.rows("SELECT d.project_id FROM project_decisions d JOIN (SELECT project_id, MAX(version) v FROM project_decisions GROUP BY project_id) m "
+                         "ON d.project_id=m.project_id AND d.version=m.v WHERE d.decision='include'")
+    ids = {r['project_id'] for r in included}
+    reports = {r['paper_id'] for r in s.db.rows("SELECT project_id, paper_id FROM project_papers WHERE status='confirmed'") if r['project_id'] in ids}
+    return {'records_examined': s.db.one('SELECT COUNT(*) n FROM discovery_observations WHERE task_id IS NOT NULL')['n'],
+            'unique_projects_found': s.db.one('SELECT COUNT(*) n FROM sweep_projects')['n'],
+            'projects_with_matching_files': s.db.one(f'SELECT COUNT(*) n FROM sweep_projects WHERE match_status IN ({marks})', MATCHING)['n'],
+            'projects_header_confirmed': s.db.one("SELECT COUNT(*) n FROM sweep_projects WHERE match_status='eyelink_confirmed'")['n'],
+            'included_projects': len(ids), 'reports_linked_to_included_projects': len(reports)}
 
 
 def latest(s, table, project_id, order='rowid'):
@@ -1145,24 +1170,52 @@ def publication_state(s, project_id):
     return 'not_searched'
 
 
+SUMMARY_COLUMNS = 'id,repository,external_id,url,title,match_status,eyelink_files,confirmed_files,inspection_status,last_inspected,first_seen'
+
+
+def summaries(s, where='', args=()):
+    """Status summary for many projects with one grouped query per table (no per-project queries)."""
+    projects_ = s.db.rows(f"SELECT {SUMMARY_COLUMNS} FROM sweep_projects {where} ORDER BY COALESCE(first_seen,'') DESC, rowid DESC", args)
+    relevance = {r['project_id']: r['status'] for r in s.db.rows(
+        'SELECT a.project_id, a.status FROM relevance_assessments a JOIN (SELECT MAX(rowid) r FROM relevance_assessments GROUP BY project_id) m ON a.rowid=m.r')}
+    decisions = {r['project_id']: r for r in s.db.rows(
+        'SELECT d.project_id,d.decision,d.exclusion_reason,d.version,d.reviewer,d.created FROM project_decisions d '
+        'JOIN (SELECT project_id, MAX(version) v FROM project_decisions GROUP BY project_id) m ON d.project_id=m.project_id AND d.version=m.v')}
+    studies = {r['ref_id']: {'id': r['id'], 'label': r['label']} for r in s.db.rows(
+        "SELECT l.ref_id, st.id, st.label FROM study_links l JOIN studies st ON st.id=l.study_id WHERE l.kind='project' AND l.removed IS NULL")}
+    confirmed = {r['project_id'] for r in s.db.rows("SELECT DISTINCT project_id FROM project_papers WHERE status='confirmed'")}
+    none_identified = {r['project_id'] for r in s.db.rows(
+        'SELECT project_id, action FROM publication_decisions WHERE rowid IN (SELECT MAX(rowid) FROM publication_decisions WHERE candidate_id IS NULL GROUP BY project_id)')
+        if r['action'] == 'none_identified'}
+    rejected = {r['candidate_id'] for r in s.db.rows(
+        'SELECT candidate_id, action FROM publication_decisions WHERE rowid IN (SELECT MAX(rowid) FROM publication_decisions WHERE candidate_id IS NOT NULL GROUP BY candidate_id)')
+        if r['action'] == 'reject'}
+    proposed = {r['project_id'] for r in s.db.rows("SELECT project_id, id FROM discovery_candidates WHERE strength<>'legacy'") if r['id'] not in rejected}
+    searched = {r['project_id'] for r in s.db.rows('SELECT DISTINCT project_id FROM publication_searches')}
+    out = {}
+    for p in projects_:
+        pid = p['id']
+        if pid in confirmed:
+            publication, article = 'confirmed', article_status(s, pid)  # few projects; needs their article text
+        else:
+            publication = 'none_identified' if pid in none_identified else 'proposed' if pid in proposed else 'not_found' if pid in searched else 'not_searched'
+            article = 'not_identified' if pid in none_identified else 'no_publication'
+        out[pid] = {**p, 'match_status': p['match_status'] or 'not_inspected', 'relevance': relevance.get(pid), 'publication': publication,
+                    'article': article, 'decision': decisions.get(pid), 'study': studies.get(pid)}
+    return out
+
+
 def summary_row(s, p):
-    a = latest(s, 'relevance_assessments', p['id'])
-    d = s.db.one('SELECT decision,exclusion_reason,version,reviewer,created FROM project_decisions WHERE project_id=? ORDER BY version DESC LIMIT 1', (p['id'],))
-    study = s.db.one("SELECT st.id,st.label FROM study_links l JOIN studies st ON st.id=l.study_id WHERE l.kind='project' AND l.ref_id=? AND l.removed IS NULL", (p['id'],))
-    return {'id': p['id'], 'repository': p['repository'], 'external_id': p['external_id'], 'url': p['url'], 'title': p['title'], 'match_status': p['match_status'] or 'not_inspected',
-            'eyelink_files': p['eyelink_files'], 'confirmed_files': p['confirmed_files'], 'inspection_status': p['inspection_status'], 'last_inspected': p['last_inspected'],
-            'relevance': a['status'] if a else None, 'publication': publication_state(s, p['id']), 'article': article_status(s, p['id']),
-            'decision': d, 'study': study, 'first_seen': p['first_seen']}
+    return summaries(s, 'WHERE id=?', (p['id'],))[p['id']]
 
 
 def projects(s, q='', match='', relevance='', decision='', page=1):
     setup(s)
-    rows = s.db.rows("SELECT * FROM sweep_projects ORDER BY COALESCE(first_seen,'') DESC, rowid DESC")
+    where, args = '', ()
+    if q:
+        where, args = "WHERE (title LIKE ? OR external_id LIKE ? OR description LIKE ? OR repository LIKE ?)", ('%' + q + '%',) * 4
     out = []
-    for p in rows:
-        if q and q.lower() not in ' '.join(str(p.get(k) or '') for k in ('title', 'external_id', 'description', 'repository')).lower():
-            continue
-        row = summary_row(s, p)
+    for row in summaries(s, where, args).values():
         if match == 'with_files' and row['match_status'] not in MATCHING:
             continue
         if match and match != 'with_files' and row['match_status'] != match:
@@ -1272,12 +1325,13 @@ def funnel(s):
     tasks = s.db.rows('SELECT t.*, j.created job_created FROM discovery_tasks t JOIN discovery_jobs j ON j.id=t.job_id ORDER BY j.created,t.position')
     obs = s.db.one('SELECT COUNT(*) n, COUNT(DISTINCT project_id) p FROM discovery_observations WHERE task_id IS NOT NULL')
     legacy_obs = s.db.one('SELECT COUNT(*) n FROM discovery_observations WHERE task_id IS NULL')['n']
-    all_projects = s.db.rows('SELECT * FROM sweep_projects')
-    rows = [summary_row(s, p) for p in all_projects]
+    rows = list(summaries(s).values())
     inspected = [r for r in rows if r['last_inspected']]
     with_files = [r for r in rows if r['match_status'] in MATCHING]
-    legacy_with_files = [p for p in all_projects if not p['last_inspected'] and s.db.one('SELECT 1 FROM sweep_files WHERE project_id=?', (p['id'],))]
-    documented = [r for r in with_files if s.db.one("SELECT 1 FROM discovery_documents WHERE project_id=? AND status='readable' AND kind NOT LIKE 'article%'", (r['id'],))]
+    listed = {r['project_id'] for r in s.db.rows('SELECT DISTINCT project_id FROM sweep_files')}
+    legacy_with_files = [r for r in rows if not r['last_inspected'] and r['id'] in listed]
+    readable = {r['project_id'] for r in s.db.rows("SELECT DISTINCT project_id FROM discovery_documents WHERE status='readable' AND kind NOT LIKE 'article%'")}
+    documented = [r for r in with_files if r['id'] in readable]
     decisions = {}
     exclusions = {}
     for r in with_files:
@@ -1289,8 +1343,8 @@ def funnel(s):
     relations = s.db.rows("SELECT * FROM project_relations WHERE status='same_dataset'")
     duplicate_projects = len({max(r['a'], r['b']) for r in relations})
     included = [r for r in with_files if (r['decision'] or {}).get('decision') == 'include']
-    inc_ids = [r['id'] for r in included]
-    papers_included = s.db.rows("SELECT DISTINCT paper_id FROM project_papers WHERE status='confirmed' AND project_id IN (%s)" % ','.join('?' * len(inc_ids)), inc_ids) if inc_ids else []
+    inc_ids = {r['id'] for r in included}
+    papers_included = {r['paper_id'] for r in s.db.rows("SELECT project_id, paper_id FROM project_papers WHERE status='confirmed'") if r['project_id'] in inc_ids}
     studies_mapped = {r['study']['id'] for r in included if r['study']}
     unmapped = [r for r in included if not r['study']]
     unknowns = []

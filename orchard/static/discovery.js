@@ -18,13 +18,24 @@ const ext=url=>/^https?:\/\//i.test(url||'')?`<a class="link" href="${esc(url)}"
 const tabs=active=>`<div class="d-tabs">${[['repository-sweep','Search'],['repository-projects','Projects'],['repository-funnel','Funnel & export'],['repository-concepts','Screening concepts']].map(([h,l])=>`<a href="#${h}" class="${h===active?'active':''}">${l}</a>`).join('')}</div>`;
 
 // ---------------------------------------------------------------- search and jobs
+const ACTIVE_JOB=j=>['queued','running','inspecting'].includes(j.status);
+function statsHtml(c){return `<div class="stats" id="d-stats">${[['Records examined',c.records_examined,'Search results across all strategies'],['Projects found',c.unique_projects_found,'Distinct repository projects'],['With .edf/.asc files',c.projects_with_matching_files,`${c.projects_header_confirmed} with EyeLink headers confirmed`],['Included',c.included_projects,`${c.reports_linked_to_included_projects} linked report(s)`]].map(([l,n,h])=>`<div class="stat"><small>${l}</small><b>${n}</b><small>${h}</small></div>`).join('')}</div>`;}
+function jobsHtml(d){return `<div id="d-jobs">${d.jobs.length?d.jobs.map(jobCard).join(''):empty('No repository searches yet','Start one above. Nothing is downloaded during a search.')}${d.more_jobs?`<p class="muted"><small>Showing the ${d.jobs.length} most recent searches of ${d.jobs.length+d.more_jobs}. Every search stays in the export.</small></p>`:''}</div>`;}
+// While a search runs, refresh only the counts and job cards; the form and open sections are left alone.
+async function refreshJobs(){
+ const d=await api('discovery');
+ const open=new Set([...document.querySelectorAll('.d-job details[open]')].map(x=>x.closest('.d-job').dataset.job));
+ const stats=document.querySelector('#d-stats'),jobs=document.querySelector('#d-jobs');
+ if(stats)stats.outerHTML=statsHtml(d.counts);
+ if(jobs){jobs.outerHTML=jobsHtml(d);open.forEach(id=>{const el=document.querySelector(`.d-job[data-job="${CSS.escape(id)}"] details`);if(el)el.open=true;});}
+ return d.jobs.some(ACTIVE_JOB);
+}
 async function searchView(){
  const d=await api('discovery');
- const active=d.jobs.some(j=>['queued','running','inspecting'].includes(j.status));
- schedule(active?'repository-sweep':null);
+ schedule(d.jobs.some(ACTIVE_JOB)?'repository-sweep':null);
  const c=d.counts;
  return header('REPOSITORY DISCOVERY','Find EyeLink data in public repositories.','Search OSF, Zenodo, Dryad and GitHub for projects with .edf/.asc files, read their documentation, link their publications and screen them.')+tabs('repository-sweep')+
- `<div class="stats">${[['Records examined',c.records_examined,'Search results across all strategies'],['Projects found',c.unique_projects_found,'Distinct repository projects'],['With .edf/.asc files',c.projects_with_matching_files,`${c.projects_header_confirmed} with EyeLink headers confirmed`],['Included',c.included_projects,`${c.reports_linked_to_included_projects} linked report(s)`]].map(([l,n,h])=>`<div class="stat"><small>${l}</small><b>${n}</b><small>${h}</small></div>`).join('')}</div>`+
+ statsHtml(c)+
  `<section class="card"><h2>New repository search</h2>
  <div class="d-form"><div><label>Sources</label><div class="row">${d.sources.map(x=>`<label class="check"><input type="checkbox" class="d-source" value="${x}" checked> ${SOURCE_LABELS[x]}</label>`).join('')}</div>
  <p class="muted"><small>Tokens: GitHub ${d.tokens.github?'configured':'<strong>not set</strong> (code search skipped)'} · Zenodo ${d.tokens.zenodo?'configured':'not set (25 results per page)'} · Dryad ${d.tokens.dryad?'configured':'not set (files listed, not downloadable)'}. See README → Configuration.</small></p>
@@ -34,7 +45,7 @@ async function searchView(){
  <label for="d-reviewer">Your name</label><input id="d-reviewer" value="${esc(reviewer())}"></div></div>
  <div class="row toolbar"><button data-d="start">Start search</button></div>
  <p class="muted"><small>File-index strategies (OSF file index, Zenodo <code>filetype:</code>, GitHub code search) look for file names or contents. Metadata strategies only match titles and descriptions; their projects count as having EyeLink files only after their full file listing is read. Each search records its exact query, page cursor, reported total and coverage limits. Long searches can be cancelled and resumed.</small></p></section>`+
- (d.jobs.length?d.jobs.map(jobCard).join(''):empty('No repository searches yet','Start one above. Nothing is downloaded during a search.'))+
+ jobsHtml(d)+
  (d.legacy_sweeps.length?`<details class="card"><summary>Earlier prototype sweeps (${d.legacy_sweeps.length})</summary><p class="muted">Bounded title searches by the earlier version. Their projects are kept and can be re-inspected from the Projects tab.</p>${d.legacy_sweeps.map(x=>`<p>${esc(x.query)} · ${badge(x.status)} · ${date(x.started)}</p>`).join('')}</details>`:'');
 }
 function jobCard(j){
@@ -241,6 +252,7 @@ function schedule(route){
  D.timer=setTimeout(async()=>{
   if(location.hash!=='#'+route||document.activeElement?.matches('input,textarea,select'))return schedule(route);
   if(route.startsWith('project/')){try{const d=await api('discovery/project/'+route.split('/')[1]);const files=document.querySelector('#d-files');if(files){const keep=[...document.querySelectorAll('.d-file:checked')].map(b=>b.value);files.outerHTML=filesCard(d);keep.forEach(v=>{const b=document.querySelector(`.d-file[value="${CSS.escape(v)}"]`);if(b)b.checked=true;});updateSelection();}schedule(d.downloads.some(b=>['queued','running'].includes(b.status))?route:null);}catch(e){}}
+  else if(route==='repository-sweep'){try{schedule(await refreshJobs()?route:null);}catch(e){schedule(route);}}
   else render();
  },3000);
 }
