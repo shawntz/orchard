@@ -96,6 +96,8 @@ class Service:
 
     def close(self):
         self.pool.shutdown(wait=True)
+        if hasattr(self, 'discovery_pool'):
+            self.discovery_pool.shutdown(wait=True)
 
     def require(self, table, id):
         if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources', 'pdfs', 'eyelink_scans'):
@@ -412,6 +414,7 @@ class Service:
         paper['identifiers'] = self.db.rows(f'SELECT * FROM identifiers WHERE paper_id IN ({marks})', ids)
         paper['relationships'] = self.db.rows(f'SELECT * FROM relationships WHERE a IN ({marks}) OR b IN ({marks})', ids+ids)
         paper['eyelink_scans'] = [self.eyelink_scan(r['id']) for r in self.db.rows(f'SELECT id FROM eyelink_scans WHERE paper_id IN ({marks}) ORDER BY rowid DESC LIMIT 3', ids)]
+        paper['repository_projects'] = self.db.rows(f"SELECT p.id,p.title,p.repository,p.url,l.status,l.relation FROM project_papers l JOIN sweep_projects p ON p.id=l.project_id WHERE l.paper_id IN ({marks}) ORDER BY l.rowid", ids)
         return paper
 
     def save_criteria(self, inclusion, exclusion):
@@ -920,10 +923,10 @@ class Service:
                         continue
                     pid=uid(); matches=classify((project.get('title') or '')+'\n'+(project.get('description') or ''),terms)
                     with self.db.connect() as c:
-                        c.execute('INSERT OR IGNORE INTO sweep_projects VALUES(?,?,?,?,?,?,?,?)',(pid,repo,project['id'],project['url'],project.get('title'),project.get('description'),project.get('doi'),None))
+                        c.execute('INSERT OR IGNORE INTO sweep_projects(id,repository,external_id,url,title,description,doi,paper_id) VALUES(?,?,?,?,?,?,?,?)',(pid,repo,project['id'],project['url'],project.get('title'),project.get('description'),project.get('doi'),None))
                         pid=c.execute('SELECT id FROM sweep_projects WHERE repository=? AND external_id=?',(repo,project['id'])).fetchone()['id']
                         for file in project['files']:
-                            c.execute('INSERT OR IGNORE INTO sweep_files VALUES(?,?,?,?,?,?)',(uid(),pid,file['path'],file.get('url'),file.get('size'),file['extension']))
+                            c.execute('INSERT OR IGNORE INTO sweep_files(id,project_id,path,url,size,extension) VALUES(?,?,?,?,?,?)',(uid(),pid,file['path'],file.get('url'),file.get('size'),file['extension']))
                         c.execute('INSERT OR REPLACE INTO sweep_findings VALUES(?,?,?,?,?,?)',(sweep_id,pid,matches['status'],matches['reason'],dump(matches['evidence']),matches['text_source']))
                         audit(c,'repository_project_found',pid,{'sweep_id':sweep_id,'repository':repo,'files':len(project['files']),'status':matches['status']})
             except Exception as exc:
@@ -997,14 +1000,16 @@ class Service:
 
     def export(self):
         tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','pdfs','files','assessments','eyelink_scans','repository_checks','repository_files','sweep_runs','sweep_projects','sweep_files','sweep_findings','sweep_article_reviews','audit')
-        tables+=('discovery_jobs','discovery_observations','discovery_documents','discovery_candidates','discovery_events')
+        tables+=tuple(t for t in discovery.EXPORT_TABLES if t not in tables)
+        repository=discovery.funnel(self)
         with self.db.connect() as c:
             eid=uid(); audit(c,'export_created',eid,{'tables':tables})
             # One read transaction for a consistent snapshot, including this export event.
             data={t:[dict(r) for r in c.execute('SELECT * FROM '+t)] for t in tables}
         data['manifest']={'schema_version':SCHEMA_VERSION,'application_version':'0.2.0','exported_at':now(),
                           'counts':{'papers': sum(p['merged_into'] is None for p in data['papers']), 'source_records':len(data['source_records']), 'discovery_events':len(data['discoveries']), 'screening_events':len(data['decisions'])},
-                          'study_count':None,'prisma_note':'Records and reports are tracked. Studies are not mapped; study counts and a complete PRISMA diagram are not available.',
+                          'study_count':None,'prisma_note':'Paper-library records and reports are tracked, but studies are not mapped for them. Repository-first counts, including mapped studies and unknowns, are in repository_funnel.',
+                          'repository_funnel':repository,
                           'pdf_note':'PDF provenance and SHA-256 hashes are exported. PDF files stay in the local data/pdfs folder and are not included.'}
         return data
 
@@ -1031,4 +1036,6 @@ class Service:
                            f"Parameters: {run['parameters']}",f"Started: {run['created']} | Finished: {run['finished']}",
                            f"Stored: {run['retrieved']} | Provider hit count: {run['total']} | Error: {run['error']}",'']
             z.writestr('search-strategy.txt','\n'.join(report))
+            z.writestr('repository-prisma.txt',discovery.prisma_text(data['manifest']['repository_funnel']))
+            z.writestr('repository-prisma.json',json.dumps(data['manifest']['repository_funnel'],ensure_ascii=False,indent=2))
         return buffer.getvalue()

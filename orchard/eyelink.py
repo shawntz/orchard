@@ -319,7 +319,9 @@ def walk_osf(transport, budget, listing, root, prefix, view):
 def osf_file(item, prefix):
     a = item['attributes']
     path = (a.get('materialized_path') or '/' + a['name']).lstrip('/')
-    return {'path': prefix + path, 'size': a.get('size'), 'url': item['links'].get('download'), 'probe_url': item['links'].get('download')}
+    hashes = (a.get('extra') or {}).get('hashes') or {}
+    checksum = 'sha256:' + hashes['sha256'] if hashes.get('sha256') else 'md5:' + hashes['md5'] if hashes.get('md5') else None
+    return {'path': prefix + path, 'size': a.get('size'), 'url': item['links'].get('download'), 'probe_url': item['links'].get('download'), 'checksum': checksum}
 
 
 def paged(transport, budget, url):
@@ -398,7 +400,8 @@ def list_github(transport, budget, link, listing, token=None, owner_repo=None, p
             continue
         path = item['path']
         probe = (probe_base + path) if probe_base else f'https://raw.githubusercontent.com/{owner_repo}/{quote(branch)}/{quote(path)}'
-        listing.files.append({'path': path, 'size': item.get('size'), 'url': f'https://github.com/{owner_repo}/blob/{quote(branch)}/{quote(path)}', 'probe_url': probe})
+        listing.files.append({'path': path, 'size': item.get('size'), 'url': f'https://github.com/{owner_repo}/blob/{quote(branch)}/{quote(path)}', 'probe_url': probe,
+                              'checksum': 'git-blob-sha1:' + item['sha'] if item.get('sha') and not probe_base else None})
     return listing
 
 
