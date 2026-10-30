@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS relationships(id TEXT PRIMARY KEY, a TEXT NOT NULL RE
 CREATE TABLE IF NOT EXISTS decisions(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), stage TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT, notes TEXT, reviewer TEXT NOT NULL, criteria_id TEXT NOT NULL REFERENCES criteria(id), created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS resources(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), kind TEXT NOT NULL, url TEXT NOT NULL, repository TEXT, evidence TEXT NOT NULL, origin TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'found_unverified', access_note TEXT, created TEXT NOT NULL, verified TEXT, UNIQUE(paper_id,kind,url,evidence));
 CREATE TABLE IF NOT EXISTS fulltexts(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), content TEXT NOT NULL, sha256 TEXT NOT NULL, origin TEXT NOT NULL, created TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pdfs(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), name TEXT NOT NULL, origin TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, license TEXT, created TEXT NOT NULL, UNIQUE(paper_id,sha256));
 CREATE TABLE IF NOT EXISTS assessments(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), fields TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, entity_id TEXT, detail TEXT NOT NULL, created TEXT NOT NULL);
 INSERT OR IGNORE INTO schema_version VALUES(2);
@@ -58,6 +59,14 @@ CREATE TRIGGER IF NOT EXISTS immutable_decisions BEFORE UPDATE ON decisions BEGI
 CREATE TRIGGER IF NOT EXISTS immutable_queries BEFORE UPDATE ON queries BEGIN SELECT RAISE(ABORT,'Queries are versioned'); END;
 '''
 
+# Version 3: multi-provider search batches and retrieved full-text files. Additive only.
+MIGRATION_3 = '''
+CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, paper_id TEXT NOT NULL REFERENCES papers(id), sha256 TEXT NOT NULL, url TEXT NOT NULL, source TEXT NOT NULL, content_type TEXT, size INTEGER NOT NULL, path TEXT NOT NULL, text_method TEXT, created TEXT NOT NULL, UNIQUE(paper_id,sha256));
+CREATE INDEX IF NOT EXISTS runs_batch ON runs(batch_id);
+INSERT OR IGNORE INTO schema_version VALUES(3);
+'''
+SCHEMA_VERSION = 3
+
 
 class Database:
     def __init__(self, path):
@@ -66,6 +75,9 @@ class Database:
         with self.connect() as c:
             c.execute('PRAGMA journal_mode=WAL')
             c.executescript(SCHEMA)
+            if 'batch_id' not in {r['name'] for r in c.execute('PRAGMA table_info(runs)')}:
+                c.execute('ALTER TABLE runs ADD COLUMN batch_id TEXT')
+            c.executescript(MIGRATION_3)
             c.execute('INSERT OR IGNORE INTO project VALUES(1,?,?,?)', ('Orchard', None, now()))
 
     @contextmanager

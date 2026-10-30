@@ -11,10 +11,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from html import unescape
+from pathlib import Path
 from urllib.parse import urlsplit
-from .db import Database, now, uid, dump, audit
+from . import pdftext
+from .db import Database, SCHEMA_VERSION, now, uid, dump, audit
 from .terms import parse_document, normalize, build_query
-from .providers import EuropePMC, Transport, normalize_epmc
+from .providers import NORMALIZERS, PDF_LIMIT, PMCCloud, Transport, build_providers, is_pdf, normalize_epmc, pmcid_normalize, require_portable
 from .repository_sweep import RepositorySweep, DEFAULT_TERMS, classify
 from . import discovery
 from . import eyelink
@@ -35,6 +37,12 @@ def doi_normalize(doi):
     return value if re.fullmatch(r'10\.\d{4,9}/\S+', value) else None
 
 
+def arxiv_normalize(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return re.sub(r'v\d+$', '', re.sub(r'^arxiv:\s*', '', value.strip(), flags=re.I)).lower()
+
+
 def plain(text):
     return unescape(re.sub(r'<[^>]+>', ' ', text or '')).strip()
 
@@ -53,14 +61,26 @@ FIELDS = ('target_finding', 'dataset_identity', 'data_level', 'timing_metadata',
 
 
 class Service:
-    def __init__(self, path, provider=None, transport=None):
+    def __init__(self, path, provider=None, transport=None, pdf_source=None, providers=None, locators=None):
         self.db = Database(path)
         discovery.setup(self)
         with self.db.connect() as c:
             c.execute("UPDATE discovery_jobs SET status='interrupted',error='Orchard stopped; rerun this search.' WHERE status IN ('queued','searching','reading_documentation')")
-        self.provider = provider or EuropePMC()
+        # Legacy folder for PDFs stored by the unmerged multi-source branch; new PDFs use data/pdfs.
+        self.files = Path(path).parent / 'files'
+        if provider is None and providers is None:
+            providers, default_locators = build_providers()
+            locators = default_locators if locators is None else locators
+        # Search providers by name; locators are consulted in order when retrieving full text.
+        self.providers = providers or {getattr(provider, 'name', 'europepmc'): provider}
+        self.provider = provider or self.providers.get('europepmc') or next(iter(self.providers.values()))
+        self.locators = locators or []
         # Shared, rate-limited client for PDFs and repository APIs.
         self.web = transport or getattr(self.provider, 'transport', None) or Transport()
+        self.pdf_source = pdf_source or PMCCloud(self.web)
+        self.pdf_dir = Path(path).parent / 'pdfs'
+        # Article downloads (PDF fallbacks); tests replace this with a stub.
+        self.fetcher = self.web
         self.scan_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='orchard')
         self.jobs = set()
@@ -76,9 +96,11 @@ class Service:
 
     def close(self):
         self.pool.shutdown(wait=True)
+        if hasattr(self, 'discovery_pool'):
+            self.discovery_pool.shutdown(wait=True)
 
     def require(self, table, id):
-        if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources', 'eyelink_scans'):
+        if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources', 'pdfs', 'eyelink_scans'):
             raise ValueError('Invalid entity')
         row = self.db.one(f'SELECT * FROM {table} WHERE id=?', (id,))
         if not row:
@@ -148,35 +170,59 @@ class Service:
         query = build_query(groups)
         return self.save_query(label, query, all_ids, document_id, rationale='OR within selected source groups; AND between groups. No date, human-only, open-data, or exclusion filters added automatically.')
 
-    def search(self, query_id, action='new', max_records=300, background=True):
-        with self.search_lock:
-            return self._search(query_id, action, max_records, background)
+    def provider_label(self, name):
+        return getattr(self.providers.get(name), 'label', name)
 
-    def _search(self, query_id, action='new', max_records=300, background=True):
+    def search(self, query_id, action='new', max_records=300, background=True, providers=None):
+        with self.search_lock:
+            return self._search(query_id, action, max_records, background, providers)
+
+    def _search(self, query_id, action='new', max_records=300, background=True, providers=None):
         q = self.require('queries', query_id)
         if not q['approved']:
             raise ValueError('Review and approve a query version before searching.')
         if action not in ('new', 'refresh', 'reuse') or not isinstance(max_records, int) or not 1 <= max_records <= 5000:
             raise ValueError('Choose a valid action and a retrieval cap from 1 to 5,000.')
-        parameters = {'max_records_per_attempt': max_records, 'resultType': 'core', 'adapter_version': self.provider.version}
-        # Do not reorder Boolean expressions or change spaces inside quoted phrases.
-        fingerprint = digest(dump({'provider': q['provider'], 'query': q['query'].strip(), 'parameters': parameters}))
-        prior = self.db.one('SELECT * FROM runs WHERE fingerprint=? ORDER BY rowid DESC LIMIT 1', (fingerprint,))
-        if not prior and action == 'reuse':
-            raise Conflict('No identical prior search exists. Choose Run search to create one.')
-        if prior and action == 'reuse':
-            return {'run': prior, 'reused': True}
-        if prior and action == 'new':
-            raise Conflict('An identical search exists. Choose reuse or refresh explicitly.')
-        id = uid()
+        names = providers if providers is not None else [n for n, p in self.providers.items() if getattr(p, 'configured', True)]
+        if not isinstance(names, list) or not names or len(set(names)) != len(names) or any(n not in self.providers for n in names):
+            raise ValueError('Choose one or more available search providers.')
+        plans = []
+        for name in names:
+            provider = self.providers[name]
+            if not getattr(provider, 'configured', True):
+                raise ValueError(f'{self.provider_label(name)} is not configured. {getattr(provider, "note", "")}')
+            if name != 'europepmc':
+                require_portable(q['query'], self.provider_label(name))
+            parameters = {'max_records_per_attempt': max_records, 'adapter_version': provider.version}
+            if name == 'europepmc':
+                parameters['resultType'] = 'core'
+            # Each provider is a separate run; do not reorder Boolean expressions or change spaces inside quoted phrases.
+            fingerprint = digest(dump({'provider': name, 'query': q['query'].strip(), 'parameters': parameters}))
+            prior = self.db.one('SELECT * FROM runs WHERE fingerprint=? ORDER BY rowid DESC LIMIT 1', (fingerprint,))
+            plans.append((name, parameters, fingerprint, prior))
+        missing = [self.provider_label(n) for n, _, _, prior in plans if not prior]
+        existing = [self.provider_label(n) for n, _, _, prior in plans if prior]
+        if action == 'reuse':
+            if missing:
+                raise Conflict('No identical prior search exists for ' + ', '.join(missing) + '. Choose Run search to create one.')
+            runs = [prior for *_, prior in plans]
+            return {'run': runs[0], 'runs': runs, 'reused': True}
+        if action == 'new' and existing:
+            raise Conflict('An identical search exists for ' + ', '.join(existing) + '. Choose reuse or refresh explicitly, or deselect those sources.')
+        batch, ids = uid(), []
         with self.db.connect() as c:
-            c.execute('INSERT INTO runs(id,query_id,query,provider,fingerprint,parameters,status,created,cursor,refresh_of) VALUES(?,?,?,?,?,?,?,?,?,?)', (id, q['id'], q['query'], q['provider'], fingerprint, dump(parameters), 'queued', now(), '*', prior['id'] if prior else None))
-            audit(c, 'search_queued', id, {'query_id': q['id'], 'action': action, 'parameters': parameters})
-        if background:
-            self.submit(id)
-        else:
-            self.execute(id)
-        return {'run': self.require('runs', id), 'reused': False}
+            for name, parameters, fingerprint, prior in plans:
+                id = uid()
+                c.execute('INSERT INTO runs(id,query_id,query,provider,fingerprint,parameters,status,created,cursor,refresh_of,batch_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)', (id, q['id'], q['query'], name, fingerprint, dump(parameters), 'queued', now(), '*', prior['id'] if prior else None, batch))
+                audit(c, 'search_queued', id, {'query_id': q['id'], 'action': action, 'parameters': parameters, 'provider': name, 'batch_id': batch})
+                ids.append(id)
+        for id in ids:
+            if background:
+                self.submit(id)
+            else:
+                self.execute(id)
+        runs = [self.require('runs', id) for id in ids]
+        return {'run': runs[0], 'runs': runs, 'reused': False}
 
     def submit(self, id, target=None):
         with self.jobs_lock:
@@ -193,7 +239,7 @@ class Service:
 
     def resume(self, id):
         run = self.require('runs', id)
-        if run['status'] not in ('failed', 'partial', 'interrupted') or run['provider'] != self.provider.name:
+        if run['status'] not in ('failed', 'partial', 'interrupted') or run['provider'] not in self.providers:
             raise Conflict('Only incomplete provider searches can be resumed.')
         with self.db.connect() as c:
             c.execute("UPDATE runs SET status='queued',error=NULL WHERE id=?", (id,))
@@ -214,14 +260,17 @@ class Service:
             with self.db.connect() as c:
                 c.execute("UPDATE runs SET status='running',error=NULL,finished=NULL WHERE id=?", (id,))
                 audit(c, 'search_started', id, {'cursor': cursor})
+            provider = self.providers.get(run['provider'])
+            if not provider:
+                raise ValueError('Provider is not available in this version: ' + run['provider'])
             while True:
                 count = self.db.one('SELECT COUNT(*) n FROM discoveries WHERE run_id=?', (id,))['n']
-                page = self.provider.page(run['query'], cursor, min(100, upper-count), lambda d:self.request_event(id, d))
+                page = provider.page(run['query'], cursor, min(100, upper-count), lambda d:self.request_event(id, d))
                 with self.db.connect() as c:
                     audit(c, 'provider_page_received', id, {'cursor': cursor, 'records': len(page.records), 'hit_count': page.total, 'next_cursor': page.cursor})
                     c.execute('UPDATE runs SET total=? WHERE id=?', (page.total, id))
                 for raw in page.records:
-                    self.ingest(id, raw)
+                    self.ingest(id, raw, run['provider'])
                 count = self.db.one('SELECT COUNT(*) n FROM discoveries WHERE run_id=?', (id,))['n']
                 complete = count >= page.total
                 with self.db.connect() as c:
@@ -247,24 +296,27 @@ class Service:
             c.execute('UPDATE runs SET status=?,error=?,finished=?,retrieved=? WHERE id=?', (status, error, now(), count, id))
             audit(c, 'search_' + status, id, {'retrieved': count, 'error': error})
 
-    def ingest(self, run_id, raw):
+    def ingest(self, run_id, raw, provider='europepmc'):
+        # Manual imports are Europe PMC core records; every provider's identifiers share one identity space.
         try:
-            norm = normalize_epmc(raw)
+            norm = NORMALIZERS.get(provider, normalize_epmc)(raw)
         except Exception as exc:
             with self.db.connect() as c:
-                audit(c, 'provider_record_rejected', run_id, {'raw': raw, 'error': str(exc)})
+                audit(c, 'provider_record_rejected', run_id, {'raw': raw, 'error': str(exc), 'provider': provider})
             raise
         norm['doi'] = doi_normalize(norm['doi'])
+        norm['pmcid'] = pmcid_normalize(norm.get('pmcid'))
+        norm['arxiv'] = arxiv_normalize(norm.get('arxiv'))
         for key in ('title', 'abstract', 'authors', 'year', 'publication_type'):
             if norm[key] is not None and not isinstance(norm[key], str):
                 raise ValueError('Invalid metadata type: ' + key)
-        ids = [('europepmc', norm['source_id'])]
-        for key in ('doi', 'pmid', 'pmcid'):
+        ids = [(provider, norm['source_id'])]
+        for key in ('doi', 'pmid', 'pmcid', 'arxiv'):
             if norm.get(key):
                 ids.append((key, str(norm[key])))
         raw_json = dump(raw)
         with self.db.connect() as c:
-            previous = c.execute('SELECT * FROM source_records WHERE provider=? AND source_id=? AND sha256=?', ('europepmc', norm['source_id'], digest(raw_json))).fetchone()
+            previous = c.execute('SELECT * FROM source_records WHERE provider=? AND source_id=? AND sha256=?', (provider, norm['source_id'], digest(raw_json))).fetchone()
             if previous:
                 pid, sid = previous['paper_id'], previous['id']
             else:
@@ -284,7 +336,7 @@ class Service:
                             reason = 'Conflicting strong identifiers' if other['id'] in matches else f'Title similarity {similarity:.2f}; year {norm["year"]!r}/{other["year"]!r}; human review required'
                             a, b = sorted((pid, other['id']))
                             c.execute('INSERT OR IGNORE INTO duplicates VALUES(?,?,?,?,?,?)', (uid(), a, b, reason, 'pending', now()))
-                    audit(c, 'paper_created', pid, {'source_id': norm['source_id']})
+                    audit(c, 'paper_created', pid, {'source_id': norm['source_id'], 'provider': provider})
                 else:
                     # First non-missing source value wins; every conflicting value remains in raw records.
                     for field in ('title', 'abstract', 'authors', 'year', 'doi', 'publication_type'):
@@ -292,17 +344,17 @@ class Service:
                 for kind, value in ids:
                     c.execute('INSERT OR IGNORE INTO identifiers VALUES(?,?,?)', (kind, value, pid))
                 sid = uid()
-                c.execute('INSERT INTO source_records VALUES(?,?,?,?,?,?,?)', (sid, 'europepmc', norm['source_id'], pid, raw_json, digest(raw_json), now()))
-                audit(c, 'source_record_stored', sid, {'paper_id': pid, 'sha256': digest(raw_json)})
+                c.execute('INSERT INTO source_records VALUES(?,?,?,?,?,?,?)', (sid, provider, norm['source_id'], pid, raw_json, digest(raw_json), now()))
+                audit(c, 'source_record_stored', sid, {'paper_id': pid, 'sha256': digest(raw_json), 'provider': provider})
+                origin = provider + ' metadata'
                 if norm['doi']:
-                    self.add_resource(c, pid, 'landing', 'https://doi.org/' + norm['doi'], 'DOI from provider metadata', 'metadata')
-                if norm.get('pmcid') and re.fullmatch(r'PMC\d+', norm['pmcid']):
-                    self.add_resource(c, pid, 'fulltext', 'https://europepmc.org/articles/' + norm['pmcid'], 'PMCID from provider; access not yet checked', 'metadata')
-                links = raw.get('fullTextUrlList', {}).get('fullTextUrl', [])
-                if isinstance(links, list):
-                    for link in links:
-                        if isinstance(link, dict) and isinstance(link.get('url'), str):
-                            self.add_resource(c, pid, 'fulltext', link['url'], dump(link), 'metadata')
+                    self.add_resource(c, pid, 'landing', 'https://doi.org/' + norm['doi'], 'DOI from provider metadata', origin)
+                if norm['pmcid']:
+                    self.add_resource(c, pid, 'fulltext', 'https://europepmc.org/articles/' + norm['pmcid'], 'PMCID from provider; access not yet checked', origin)
+                if norm['arxiv']:
+                    self.add_resource(c, pid, 'pdf', 'https://arxiv.org/pdf/' + norm['arxiv'], 'arXiv identifier from provider; access not yet checked', origin)
+                for item in norm['links']:
+                    self.add_resource(c, pid, item['kind'], item['url'], item['evidence'], origin)
                 self.extract_resources(c, pid, plain(norm['abstract']), 'abstract')
             c.execute('INSERT OR IGNORE INTO discoveries VALUES(?,?,?)', (run_id, sid, now()))
             return pid
@@ -356,12 +408,13 @@ class Service:
         paper = self.require('papers', id)
         ids = self.paper_ids(id)
         marks = ','.join('?' for _ in ids)
-        for key, table in [('sources','source_records'),('resources','resources'),('decisions','decisions'),('assessments','assessments'),('fulltexts','fulltexts')]:
+        for key, table in [('sources','source_records'),('resources','resources'),('decisions','decisions'),('assessments','assessments'),('fulltexts','fulltexts'),('pdfs','pdfs'),('files','files')]:
             paper[key] = self.db.rows(f'SELECT * FROM {table} WHERE paper_id IN ({marks}) ORDER BY rowid DESC', ids)
         paper['discoveries'] = self.db.rows(f'SELECT d.*,r.query,r.provider,r.status FROM discoveries d JOIN source_records s ON s.id=d.source_record_id JOIN runs r ON r.id=d.run_id WHERE s.paper_id IN ({marks})', ids)
         paper['identifiers'] = self.db.rows(f'SELECT * FROM identifiers WHERE paper_id IN ({marks})', ids)
         paper['relationships'] = self.db.rows(f'SELECT * FROM relationships WHERE a IN ({marks}) OR b IN ({marks})', ids+ids)
         paper['eyelink_scans'] = [self.eyelink_scan(r['id']) for r in self.db.rows(f'SELECT id FROM eyelink_scans WHERE paper_id IN ({marks}) ORDER BY rowid DESC LIMIT 3', ids)]
+        paper['repository_projects'] = self.db.rows(f"SELECT p.id,p.title,p.repository,p.url,l.status,l.relation FROM project_papers l JOIN sweep_projects p ON p.id=l.project_id WHERE l.paper_id IN ({marks}) ORDER BY l.rowid", ids)
         return paper
 
     def save_criteria(self, inclusion, exclusion):
@@ -445,17 +498,176 @@ class Service:
         return self.paper(id)
 
     def fetch_fulltext(self, id):
-        paper=self.paper(id)
-        pmcid=next((i['value'] for i in paper['identifiers'] if i['kind']=='pmcid'),None)
-        if not pmcid:
-            raise ValueError('No PMCID is available. Open the source links or import authorized text manually.')
-        try:
-            text,url=self.provider.fulltext(pmcid,lambda d:self.request_event(id,d))
-            return self.import_fulltext(id,text,url)
-        except Exception as exc:
+        """Try every source until one yields the article: PMC XML, known PDF links, then live lookups by identifier."""
+        paper = self.paper(id)
+        ids = {}
+        for i in paper['identifiers']:
+            if i['kind'] in ('doi', 'pmid', 'pmcid', 'arxiv'):
+                ids.setdefault(i['kind'], i['value'])
+        candidates = [(r['url'], r['origin']) for r in paper['resources'] if r['kind'] == 'pdf' and r['url'] and r['status'] != 'rejected']
+        if not ids and not candidates:
+            raise ValueError('No DOI, PMID, PMCID, arXiv ID or PDF link is available. Open the source links or import authorized text manually.')
+        attempts, tried = [], set()
+        callback = lambda d: self.request_event(id, d)
+
+        def log(source, target, outcome, detail=''):
+            attempts.append({'source': source, 'target': target, 'outcome': outcome, 'detail': str(detail)[:500]})
+
+        def derived():
+            # Identifier-based PDF routes that need no lookup.
+            if ids.get('pmcid'):
+                yield 'https://europepmc.org/articles/' + ids['pmcid'] + '?pdf=render', 'Europe PMC (PMCID)'
+            if ids.get('arxiv'):
+                yield 'https://arxiv.org/pdf/' + ids['arxiv'], 'arXiv (identifier)'
+
+        def try_xml():
+            epmc = self.providers.get('europepmc')
+            pmcid = ids.get('pmcid')
+            if not pmcid or not hasattr(epmc, 'fulltext') or ('xml', pmcid) in tried:
+                return None
+            tried.add(('xml', pmcid))
+            try:
+                text, url = epmc.fulltext(pmcid, callback)
+                if not text.strip():
+                    raise ValueError('Article XML contained no text.')
+            except Exception as exc:
+                log('europepmc', pmcid, 'failed', exc)
+                return None
+            log('europepmc', url, 'retrieved', 'JATS XML full text')
+            self.import_fulltext(id, text, url)
+            return {'source': 'europepmc', 'url': url, 'format': 'xml', 'text_extracted': True}
+
+        def try_pdf(url, source):
+            if url in tried:
+                return None
+            tried.add(url)
+            try:
+                data, final, headers = self.fetcher.get(url, limit=PDF_LIMIT, callback=callback)
+            except Exception as exc:
+                log(source, url, 'failed', exc)
+                return None
+            kind = next((v for k, v in headers.items() if k.lower() == 'content-type'), None)
+            if not pdftext.is_pdf(data):
+                log(source, url, 'not_pdf', f'Received {kind or "unknown content"}, not a PDF; probably a landing or sign-in page.')
+                return None
+            stored = self.store_pdf(id, data, Path(urlsplit(final).path).name or 'article.pdf', final, None, {'source': source, 'content_type': kind})
             with self.db.connect() as c:
-                audit(c,'fulltext_retrieval_failed',id,{'error':str(exc),'pmcid':pmcid})
-            raise ValueError('Full text could not be retrieved: '+str(exc)) from exc
+                self.add_resource(c, id, 'pdf', final, 'PDF retrieved via ' + source, source + ' retrieval')
+                c.execute("UPDATE resources SET status='url_reachable',access_note=?,verified=? WHERE paper_id=? AND kind='pdf' AND url=?", (f"PDF downloaded ({len(data)} bytes, sha256 {stored['pdf']['sha256']}). Access does not establish license or reuse rights.", now(), id, final))
+            extracted = stored['text_extracted']
+            log(source, final, 'retrieved', 'PDF stored' + ('; text extracted' if extracted else '; text could not be extracted'))
+            return {'source': source, 'url': final, 'format': 'pdf', 'pdf_id': stored['pdf']['id'], 'text_extracted': extracted}
+
+        def attempt(pending):
+            for url, source in pending:
+                result = try_pdf(url, source)
+                if result:
+                    return result
+
+        result = try_xml() or attempt(candidates) or attempt(list(derived()))
+        for locator in [] if result else self.locators:
+            if not getattr(locator, 'configured', True):
+                log(locator.name, '', 'skipped', getattr(locator, 'note', 'Not configured.'))
+                continue
+            try:
+                links, found = locator.locate(dict(ids), callback)
+            except Exception as exc:
+                log(locator.name, '', 'failed', exc)
+                continue
+            log(locator.name, '', 'located', f'{len(links)} candidate links')
+            for key, value in found.items():
+                value = {'pmcid': pmcid_normalize, 'arxiv': arxiv_normalize}.get(key, str)(value) if value else None
+                if value and not ids.get(key):
+                    ids[key] = value
+            with self.db.connect() as c:
+                for item in links:
+                    self.add_resource(c, id, item['kind'], item['url'], item['evidence'], locator.name + ' lookup')
+            result = try_xml() or attempt([(l['url'], locator.name) for l in links if l['kind'] == 'pdf']) or attempt(list(derived()))
+            if result:
+                break
+        with self.db.connect() as c:
+            audit(c, 'fulltext_retrieved' if result else 'fulltext_retrieval_failed', id, {'result': result, 'attempts': attempts})
+        if not result:
+            summary = '; '.join(f"{a['source']}: {a['outcome']}" for a in attempts) or 'no sources available'
+            raise ValueError('Full text could not be retrieved from any source (' + summary + '). Any links found were saved for manual access.')
+        paper = self.paper(id)
+        paper['retrieval'] = {**result, 'attempts': attempts}
+        return paper
+
+    def file(self, id):
+        row = self.db.one('SELECT * FROM files WHERE id=?', (id,))
+        if not row:
+            raise KeyError('Record not found.')
+        path = (self.files / row['path']).resolve()
+        if path.parent != self.files.resolve() or not path.is_file():
+            raise KeyError('Stored file is missing from the data folder.')
+        return row, path.read_bytes()
+
+    def store_pdf(self, id, data, name, origin, license=None, detail=None):
+        self.require('papers', id)
+        if not is_pdf(data):
+            raise ValueError('The file is not a PDF.')
+        if len(data) > PDF_LIMIT:
+            raise ValueError('PDFs are limited to 60 MB.')
+        sha = hashlib.sha256(data).hexdigest()
+        ids = self.paper_ids(id)
+        marks = ','.join('?' for _ in ids)
+        existing = self.db.one(f'SELECT * FROM pdfs WHERE sha256=? AND paper_id IN ({marks})', [sha]+ids)
+        if existing:
+            return {'pdf': existing, 'reused': True, 'text_extracted': None}
+        # Content-addressed files: identical bytes are stored once; rows keep per-paper provenance.
+        self.pdf_dir.mkdir(parents=True, exist_ok=True)
+        file = self.pdf_dir / (sha + '.pdf')
+        if not file.exists():
+            tmp = file.with_suffix('.tmp-' + uid())
+            tmp.write_bytes(data)
+            os.replace(tmp, file)
+        name = re.sub(r'[\x00-\x1f/\\]+', '_', Path(str(name or '')).name).strip()[:200] or 'article.pdf'
+        pid = uid()
+        text, method = pdftext.extract(data)
+        with self.db.connect() as c:
+            c.execute('INSERT INTO pdfs VALUES(?,?,?,?,?,?,?,?)', (pid, id, name, origin, sha, len(data), license, now()))
+            audit(c, 'pdf_stored', id, {'pdf_id': pid, 'origin': origin, 'sha256': sha, 'size': len(data), 'license': license, 'text_method': method if text else None, **(detail or {})})
+        if text:
+            # Readable text sits beside the PDF in the reader and feeds link extraction and screening evidence.
+            self.import_fulltext(id, text[:4_000_000], f'PDF text ({method}) from {origin} [pdf {pid}]')
+        return {'pdf': self.require('pdfs', pid), 'reused': False, 'text_extracted': bool(text)}
+
+    def pdf_file(self, id):
+        row = self.require('pdfs', id)
+        file = self.pdf_dir / (row['sha256'] + '.pdf')
+        if not re.fullmatch(r'[0-9a-f]{64}', row['sha256']) or not file.is_file():
+            raise KeyError('The PDF file is missing from the data folder.')
+        return row, file.read_bytes()
+
+    def pdf_routes(self, paper):
+        """Open-access routes in order of reliability: PMC dataset, then provider-listed PDF links."""
+        found = [('pmc', i['value']) for i in paper['identifiers'] if i['kind'] == 'pmcid' and re.fullmatch(r'PMC\d+', i['value'])]
+        for source in paper['sources']:
+            links = json.loads(source['raw']).get('fullTextUrlList', {}).get('fullTextUrl', [])
+            for link in links if isinstance(links, list) else []:
+                if isinstance(link, dict) and link.get('documentStyle') == 'pdf' and isinstance(link.get('url'), str) and link['url'].startswith(('https://', 'http://')):
+                    found.append(('url', link['url']))
+        return list(dict.fromkeys(found))[:6]
+
+    def fetch_pdf(self, id):
+        paper = self.paper(id)
+        candidates = self.pdf_routes(paper)
+        if not candidates:
+            raise ValueError('No PMCID or open-access PDF link is recorded for this paper. Download it through your library and upload the PDF.')
+        attempts = []
+        for kind, value in candidates:
+            try:
+                if kind == 'pmc':
+                    data, url, info = self.pdf_source.pdf(value, lambda d: self.request_event(id, d))
+                    return self.store_pdf(id, data, info['version'] + '.pdf', url, info.get('license'), {'source': 'PMC article dataset', **info})
+                data, url = self.pdf_source.download(value, lambda d: self.request_event(id, d))
+                return self.store_pdf(id, data, Path(urlsplit(url).path).name or 'article.pdf', url, None, {'source': 'Provider full-text link', 'listed_url': value})
+            except Exception as exc:
+                attempts.append({'source': value, 'error': str(exc)})
+        with self.db.connect() as c:
+            audit(c, 'pdf_retrieval_failed', id, {'attempts': attempts})
+        raise ValueError('No open-access PDF could be retrieved (' + '; '.join(a['source'] + ': ' + a['error'] for a in attempts) + '). Download it through your library and upload the PDF.')
 
     def resource_action(self, id, action, note=''):
         r=self.require('resources',id)
@@ -596,7 +808,7 @@ class Service:
 
     def pdf_candidates(self, paper, pdf_url, step):
         urls = [pdf_url] if pdf_url else []
-        email = os.environ.get('ORCHARD_UNPAYWALL_EMAIL')
+        email = os.environ.get('ORCHARD_UNPAYWALL_EMAIL') or os.environ.get('ORCHARD_CONTACT_EMAIL')
         if paper['doi'] and email:
             try:
                 urls += eyelink.unpaywall_pdfs(self.web, paper['doi'], email)
@@ -669,13 +881,24 @@ class Service:
                 'pending_duplicates':"SELECT COUNT(*) FROM duplicates WHERE status='pending'",
                 'data_links':"SELECT COUNT(*) FROM resources WHERE kind IN ('dataset','code','supplement') AND status<>'rejected'",
                 'merged_records':'SELECT COUNT(*) FROM papers WHERE merged_into IS NOT NULL',
+                'pdfs':'SELECT COUNT(DISTINCT paper_id) FROM files',
                 'screening_events':'SELECT COUNT(*) FROM decisions',
                 'eyelink_papers':"SELECT COUNT(DISTINCT paper_id) FROM eyelink_scans WHERE result IN ('eyelink_confirmed','eyelink_candidates')"
             }.items(): counts[name]=c.execute(sql).fetchone()[0]
         return {'project':self.db.one('SELECT * FROM project'), 'counts':counts,
                 'criteria':self.db.one('SELECT * FROM criteria ORDER BY rowid DESC LIMIT 1'),
                 'runs':self.db.rows('SELECT * FROM runs ORDER BY rowid DESC LIMIT 8'),
-                'provider':{'name':'Europe PMC','configured':True,'live_verified':False,'note':'No API key required. Live access depends on your network. Check each run status.'}}
+                'providers':self.provider_status()}
+
+    def provider_status(self):
+        rows, seen = [], set()
+        for p in list(self.providers.values()) + self.locators:
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            rows.append({'name': p.name, 'label': getattr(p, 'label', p.name), 'search': p.name in self.providers,
+                         'locate': p in self.locators, 'configured': getattr(p, 'configured', True), 'note': getattr(p, 'note', '')})
+        return rows
 
     def repository_sweep(self, query, repositories=None, terms=None, max_pages=2, adapter=None):
         if not isinstance(query, str) or not query.strip() or len(query)>160:
@@ -700,10 +923,10 @@ class Service:
                         continue
                     pid=uid(); matches=classify((project.get('title') or '')+'\n'+(project.get('description') or ''),terms)
                     with self.db.connect() as c:
-                        c.execute('INSERT OR IGNORE INTO sweep_projects VALUES(?,?,?,?,?,?,?,?)',(pid,repo,project['id'],project['url'],project.get('title'),project.get('description'),project.get('doi'),None))
+                        c.execute('INSERT OR IGNORE INTO sweep_projects(id,repository,external_id,url,title,description,doi,paper_id) VALUES(?,?,?,?,?,?,?,?)',(pid,repo,project['id'],project['url'],project.get('title'),project.get('description'),project.get('doi'),None))
                         pid=c.execute('SELECT id FROM sweep_projects WHERE repository=? AND external_id=?',(repo,project['id'])).fetchone()['id']
                         for file in project['files']:
-                            c.execute('INSERT OR IGNORE INTO sweep_files VALUES(?,?,?,?,?,?)',(uid(),pid,file['path'],file.get('url'),file.get('size'),file['extension']))
+                            c.execute('INSERT OR IGNORE INTO sweep_files(id,project_id,path,url,size,extension) VALUES(?,?,?,?,?,?)',(uid(),pid,file['path'],file.get('url'),file.get('size'),file['extension']))
                         c.execute('INSERT OR REPLACE INTO sweep_findings VALUES(?,?,?,?,?,?)',(sweep_id,pid,matches['status'],matches['reason'],dump(matches['evidence']),matches['text_source']))
                         audit(c,'repository_project_found',pid,{'sweep_id':sweep_id,'repository':repo,'files':len(project['files']),'status':matches['status']})
             except Exception as exc:
@@ -776,15 +999,18 @@ class Service:
         return self.db.one('SELECT * FROM sweep_article_reviews WHERE project_id=? ORDER BY created DESC LIMIT 1',(project_id,))
 
     def export(self):
-        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','assessments','eyelink_scans','repository_checks','repository_files','sweep_runs','sweep_projects','sweep_files','sweep_findings','sweep_article_reviews','audit')
-        tables+=('discovery_jobs','discovery_observations','discovery_documents','discovery_candidates','discovery_events')
+        tables=('project','documents','concepts','terms','queries','criteria','runs','papers','identifiers','source_records','discoveries','duplicates','relationships','decisions','resources','fulltexts','pdfs','files','assessments','eyelink_scans','repository_checks','repository_files','sweep_runs','sweep_projects','sweep_files','sweep_findings','sweep_article_reviews','audit')
+        tables+=tuple(t for t in discovery.EXPORT_TABLES if t not in tables)
+        repository=discovery.funnel(self)
         with self.db.connect() as c:
             eid=uid(); audit(c,'export_created',eid,{'tables':tables})
             # One read transaction for a consistent snapshot, including this export event.
             data={t:[dict(r) for r in c.execute('SELECT * FROM '+t)] for t in tables}
-        data['manifest']={'schema_version':2,'application_version':'0.1.0','exported_at':now(),
+        data['manifest']={'schema_version':SCHEMA_VERSION,'application_version':'0.2.0','exported_at':now(),
                           'counts':{'papers': sum(p['merged_into'] is None for p in data['papers']), 'source_records':len(data['source_records']), 'discovery_events':len(data['discoveries']), 'screening_events':len(data['decisions'])},
-                          'study_count':None,'prisma_note':'Records and reports are tracked. Studies are not mapped; study counts and a complete PRISMA diagram are not available.'}
+                          'study_count':None,'prisma_note':'Paper-library records and reports are tracked, but studies are not mapped for them. Repository-first counts, including mapped studies and unknowns, are in repository_funnel.',
+                          'repository_funnel':repository,
+                          'pdf_note':'PDF provenance and SHA-256 hashes are exported. PDF files stay in the local data/pdfs folder and are not included.'}
         return data
 
     def export_zip(self):
@@ -810,4 +1036,6 @@ class Service:
                            f"Parameters: {run['parameters']}",f"Started: {run['created']} | Finished: {run['finished']}",
                            f"Stored: {run['retrieved']} | Provider hit count: {run['total']} | Error: {run['error']}",'']
             z.writestr('search-strategy.txt','\n'.join(report))
+            z.writestr('repository-prisma.txt',discovery.prisma_text(data['manifest']['repository_funnel']))
+            z.writestr('repository-prisma.json',json.dumps(data['manifest']['repository_funnel'],ensure_ascii=False,indent=2))
         return buffer.getvalue()
