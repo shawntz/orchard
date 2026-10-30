@@ -37,6 +37,7 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | GET `/eyelink/{id}` | — | Scan steps, repository checks, evidence, and `.edf`/`.asc`/archive rows |
 | GET `/audit` | `page`, `q` | Newest-first events, 100/page |
 | GET `/export` | optional `format=json` | ZIP (CSV + JSON + report), or JSON |
+| GET `/export/manuscript` | — | ZIP of manuscript supplementary tables (CSV), README and data dictionary |
 
 Title/abstract decisions: `include`, `exclude`, `uncertain`, `needs_information`.
 Full-text decisions: `include`, `exclude`, `uncertain`, `awaiting_fulltext`, `inaccessible`.

@@ -75,6 +75,8 @@ class Handler(BaseHTTPRequestHandler):
             page=max(1,int(args.get('page',1)))
             q=args.get('q','')
             return self.send(200,s.db.rows('SELECT * FROM audit WHERE event LIKE ? OR entity_id LIKE ? ORDER BY id DESC LIMIT 100 OFFSET ?',('%'+q+'%','%'+q+'%',(page-1)*100)))
+        if path=='/api/export/manuscript':
+            return self.send(200,s.manuscript_zip(),'application/zip','orchard-manuscript-tables.zip')
         if path=='/api/export':
             if args.get('format')=='json':
                 return self.send(200,json.dumps(s.export(),ensure_ascii=False,indent=2).encode(),download='orchard-export.json')
