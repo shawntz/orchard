@@ -1,4 +1,10 @@
-"""Local-only HTTP interface; no dependency installation required."""
+"""HTTP interface; no dependency installation required.
+
+By default Orchard is local-only. For a hosted deployment it still binds to
+127.0.0.1 and sits behind an authenticating reverse proxy: --public-url adds
+the site's host/origin to the allow-list and --user-header names the header
+in which the proxy passes the signed-in username (recorded on every audit event).
+"""
 import argparse
 import json
 import os
@@ -6,6 +12,7 @@ import re
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+from .db import ACTOR
 from .service import Service, Conflict
 from . import discovery
 from .providers import PDF_LIMIT
@@ -14,6 +21,7 @@ STATIC=Path(__file__).parent/'static'
 CSP="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 # Browser PDF viewers run as plugins in the response's own document, so a stricter policy would blank them.
 PDF_CSP="frame-ancestors 'self'"
+USERNAME=re.compile(r'[^\x00-\x1f\x7f]{1,200}')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -36,15 +44,37 @@ class Handler(BaseHTTPRequestHandler):
     def valid_host(self):
         expected={f'127.0.0.1:{self.server.server_port}',f'localhost:{self.server.server_port}'}
         host=self.headers.get('Host','')
-        if host not in expected:
+        if host not in expected|self.server.public_hosts:
             self.send(403,{'error':'Orchard accepts local-host requests only.'}); return False
         origin=self.headers.get('Origin')
-        if origin and origin not in {'http://'+h for h in expected}:
+        if origin and origin not in {'http://'+h for h in expected}|self.server.public_origins:
             self.send(403,{'error':'Cross-origin requests are not allowed.'}); return False
         return True
 
+    def identify(self):
+        """Read the username set by the authenticating proxy; refuse requests without one."""
+        header=self.server.user_header
+        if not header: return True
+        user=self.headers.get(header,'').strip()
+        if not USERNAME.fullmatch(user):
+            self.send(401,{'error':'Sign in required. Orchard did not receive a username from the login proxy.'}); return False
+        ACTOR.set(user)
+        return True
+
+    def log_message(self, format, *args):
+        # Behind the proxy every client is 127.0.0.1, so name the signed-in user instead.
+        user=ACTOR.get()
+        if user: return super().log_message('user=%s '+format, user, *args)
+        return super().log_message(format, *args)
+
+    def handle_one_request(self):
+        # Each request starts unattributed, even on a reused keep-alive connection.
+        token=ACTOR.set(None)
+        try: super().handle_one_request()
+        finally: ACTOR.reset(token)
+
     def do_GET(self):
-        if not self.valid_host(): return
+        if not self.valid_host() or not self.identify(): return
         try:
             self.get()
         except KeyError as e: self.send(404,{'error':str(e)})
@@ -55,6 +85,7 @@ class Handler(BaseHTTPRequestHandler):
     def get(self):
         s=self.server.service
         parsed=urlparse(self.path); path=parsed.path; args={k:v[-1] for k,v in parse_qs(parsed.query).items()}
+        if path=='/api/session': return self.send(200,{'user':ACTOR.get(),'authenticated':bool(self.server.user_header)})
         if path=='/api/overview': return self.send(200,s.overview())
         if path=='/api/discovery': return self.send(200,discovery.report(s))
         if path.startswith('/api/discovery/project/'): return self.send(200,discovery.detail(s,path.split('/')[-1]))
@@ -88,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/audit':
             page=max(1,int(args.get('page',1)))
             q=args.get('q','')
-            return self.send(200,s.db.rows('SELECT * FROM audit WHERE event LIKE ? OR entity_id LIKE ? ORDER BY id DESC LIMIT 100 OFFSET ?',('%'+q+'%','%'+q+'%',(page-1)*100)))
+            return self.send(200,s.db.rows('SELECT * FROM audit WHERE event LIKE ? OR entity_id LIKE ? OR actor LIKE ? ORDER BY id DESC LIMIT 100 OFFSET ?',('%'+q+'%','%'+q+'%','%'+q+'%',(page-1)*100)))
         if path=='/api/export':
             if args.get('format')=='json':
                 return self.send(200,json.dumps(s.export(),ensure_ascii=False,indent=2).encode(),download='orchard-export.json')
@@ -101,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404,{'error':'Not found'})
 
     def do_POST(self):
-        if not self.valid_host(): return
+        if not self.valid_host() or not self.identify(): return
         try:
             parsed=urlparse(self.path)
             if re.fullmatch(r'/api/papers/[^/]+/pdf',parsed.path):
@@ -157,9 +188,25 @@ class Handler(BaseHTTPRequestHandler):
         raise KeyError('Unknown API operation.')
 
 
-def make_server(service,port=8765):
+def public_site(url):
+    """Return the (Host, Origin) a browser uses for the public URL, e.g. https://orchard.example.org."""
+    parsed=urlparse(url or '')
+    if parsed.scheme not in ('http','https') or not parsed.netloc or parsed.path not in ('','/') or parsed.query:
+        raise ValueError('--public-url must look like https://orchard.example.org (no path).')
+    return parsed.netloc.lower(),f'{parsed.scheme}://{parsed.netloc.lower()}'
+
+
+def make_server(service,port=8765,public_url=None,user_header=None):
+    # Always loopback: remote access goes through the authenticating proxy on the same machine.
     server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
     server.service=service
+    server.public_hosts,server.public_origins=set(),set()
+    if public_url:
+        host,origin=public_site(public_url)
+        server.public_hosts.add(host); server.public_origins.add(origin)
+    if user_header is not None and not re.fullmatch(r'[A-Za-z0-9-]+',user_header):
+        raise ValueError('--user-header must be a plain HTTP header name such as X-Remote-User.')
+    server.user_header=user_header or None
     return server
 
 
@@ -167,15 +214,21 @@ def main():
     parser=argparse.ArgumentParser(description='Orchard local literature search workspace')
     parser.add_argument('--port',type=int,default=8765)
     parser.add_argument('--data-dir',default=os.environ.get('ORCHARD_DATA_DIR',str(Path(__file__).resolve().parent.parent/'data')))
+    parser.add_argument('--public-url',default=os.environ.get('ORCHARD_PUBLIC_URL') or None,help='Public site URL served by the reverse proxy, e.g. https://orchard.example.org')
+    parser.add_argument('--user-header',default=os.environ.get('ORCHARD_USER_HEADER') or None,help='Header carrying the proxy-authenticated username, e.g. X-Remote-User. Requests without it are refused.')
     args=parser.parse_args()
+    if args.public_url and not args.user_header:
+        parser.error('--public-url requires --user-header so every action is attributed to a signed-in user.')
     data=Path(args.data_dir).resolve()
     service=Service(data/'orchard.sqlite3')
     try:
-        server=make_server(service,args.port)
-    except OSError:
+        server=make_server(service,args.port,args.public_url,args.user_header)
+    except (OSError,ValueError):
         service.close(); raise
     print(f'Orchard is running at http://127.0.0.1:{server.server_port}',flush=True)
     print(f'Database: {data / "orchard.sqlite3"}',flush=True)
+    if args.public_url: print(f'Accepting proxied requests for {args.public_url}',flush=True)
+    if args.user_header: print(f'Signed-in username read from the {args.user_header} header',flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally:

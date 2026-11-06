@@ -27,7 +27,9 @@ A second port or a separate workspace can be selected explicitly:
 python3 -m orchard --port 8766 --data-dir ./my-research-data
 ```
 
-There is no build or install step. Run commands from the directory containing this README. The app binds only to `127.0.0.1`; it is not a hosted website and has no multi-user authentication. Run only one app process per database.
+There is no build or install step. Run commands from the directory containing this README. The app binds only to `127.0.0.1` and, by default, has no multi-user authentication. Run only one app process per database.
+
+**Shared/hosted use:** [docs/deploy-aws.md](docs/deploy-aws.md) walks through running Orchard for a team on AWS EC2 behind an HTTPS login proxy, with continuous S3 backup. Background jobs are visible to every signed-in user, and every action in the audit trail is recorded under the username that performed it.
 
 ## First research session
 
@@ -60,6 +62,7 @@ When offline, you can still import documents, plan queries, import actual Europe
 - [x] `eyeris` reprocessing-feasibility assessment history.
 - [x] EyeLink finder: PDF download, repository-link detection, repository file listings, remote ZIP directories and `.edf`/`.asc` header checks.
 - [x] Filtered, paginated paper library; resource inventory; complete CSV/JSON/history export.
+- [x] Optional hosted mode: proxy-authenticated usernames on every audit event (including background jobs) and screening decision; [EC2 + S3 deployment guide](docs/deploy-aws.md).
 - [x] Automated workflow tests and a GitHub Actions test configuration.
 
 ## EyeLink finder
@@ -125,7 +128,7 @@ orchard/
   static/           HTML, CSS and browser JavaScript
 scripts/            source import and optional live API check
 tests/              isolated synthetic workflow tests
-docs/               architecture, API, limitations and validation
+docs/               architecture, API, limitations, validation and AWS deployment
 data/               local research database (ignored by Git)
 .github/workflows/  automated test configuration
 ```

@@ -233,7 +233,9 @@ def start(s,parameters):
     setup(s); ident=uid()
     # Validate before queuing and store a copy of every submitted search parameter.
     if not isinstance(parameters.get('query'),str) or not parameters['query'].strip(): raise ValueError('Enter a search phrase.')
-    with s.db.connect() as c: c.execute('INSERT INTO discovery_jobs VALUES(?,?,?,?,?,?,?)',(ident,'queued',dump(parameters),now(),None,None,None))
+    with s.db.connect() as c:
+        c.execute('INSERT INTO discovery_jobs VALUES(?,?,?,?,?,?,?)',(ident,'queued',dump(parameters),now(),None,None,None))
+        audit(c,'discovery_job_queued',ident,{'parameters':parameters})
     def work():
         try:
             with s.db.connect() as c: c.execute("UPDATE discovery_jobs SET status='searching' WHERE id=?",(ident,))
@@ -255,7 +257,7 @@ def start(s,parameters):
             with s.db.connect() as c: c.execute('UPDATE discovery_jobs SET status=?,finished=? WHERE id=?',(result['sweep']['status'],now(),ident))
         except Exception as exc:
             with s.db.connect() as c: c.execute("UPDATE discovery_jobs SET status='failed',finished=?,error=? WHERE id=?",(now(),str(exc),ident))
-    s.pool.submit(work)
+    s.spawn(work)
     return {'id':ident}
 
 def report(s):
