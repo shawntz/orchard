@@ -1,10 +1,16 @@
 """SQLite persistence. Every connection uses foreign keys; migrations are additive."""
+import contextvars
 import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+
+# Username of whoever caused the current action. Set per HTTP request from the
+# trusted reverse-proxy header and copied into background jobs; None when local.
+ACTOR = contextvars.ContextVar('orchard_actor', default=None)
 
 
 def now():
@@ -67,6 +73,11 @@ class Database:
         with self.connect() as c:
             c.execute('PRAGMA journal_mode=WAL')
             c.executescript(SCHEMA)
+            # Schema version 3: additive actor column on the append-only audit log.
+            if 'actor' not in {r['name'] for r in c.execute('PRAGMA table_info(audit)')}:
+                c.execute('ALTER TABLE audit ADD COLUMN actor TEXT')
+            c.execute('CREATE INDEX IF NOT EXISTS audit_actor ON audit(actor)')
+            c.execute('INSERT OR IGNORE INTO schema_version VALUES(3)')
             c.execute('INSERT OR IGNORE INTO project VALUES(1,?,?,?)', ('Orchard', None, now()))
 
     @contextmanager
@@ -92,5 +103,5 @@ class Database:
         return rows[0] if rows else None
 
 
-def audit(c, event, entity=None, detail=None):
-    c.execute('INSERT INTO audit(event,entity_id,detail,created) VALUES(?,?,?,?)', (event, entity, dump(detail or {}), now()))
+def audit(c, event, entity=None, detail=None, actor=None):
+    c.execute('INSERT INTO audit(event,entity_id,detail,created,actor) VALUES(?,?,?,?,?)', (event, entity, dump(detail or {}), now(), actor or ACTOR.get()))

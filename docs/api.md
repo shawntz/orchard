@@ -1,9 +1,10 @@
 # Local API reference
 
-Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS access. POST bodies must be JSON objects, at most 12 MB. Errors use `{"error":"…"}`: 400 validation, 404 missing record, 409 conflict. The application is local and single-user, not an authenticated public API.
+Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS access. POST bodies must be JSON objects, at most 12 MB. Errors use `{"error":"…"}`: 400 validation, 404 missing record, 409 conflict. By default the application is local and single-user. In hosted mode (`--public-url` plus `--user-header`, see [deploy-aws.md](deploy-aws.md)), the public host/origin is also accepted, every request must carry the proxy-supplied username header (otherwise 401), and that username is stored as `actor` on each audit event and as the screening `reviewer`.
 
 | Method / route | Body or query | Result |
 |---|---|---|
+| GET `/session` | — | `{"user": <signed-in username or null>, "authenticated": <hosted mode?>}` |
 | GET `/overview` | — | Project, current criteria, actual DB counts and recent runs |
 | POST `/project` | `name`, `question` | Save project wording with audit history |
 | GET `/documents` | — | Imported document metadata |
@@ -35,7 +36,7 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | POST `/eyelink-scan-all` | `scope` (`unscanned`, `included`, `all`), optional `limit` (1–1000) | `queued` count |
 | GET `/eyelink` | — | Scans, newest first, with paper title, verdict and counts |
 | GET `/eyelink/{id}` | — | Scan steps, repository checks, evidence, and `.edf`/`.asc`/archive rows |
-| GET `/audit` | `page`, `q` | Newest-first events, 100/page |
+| GET `/audit` | `page`, `q` | Newest-first events, 100/page; `q` matches event, record ID or `actor` username |
 | GET `/export` | optional `format=json` | ZIP (CSV + JSON + report), or JSON |
 
 Title/abstract decisions: `include`, `exclude`, `uncertain`, `needs_information`.

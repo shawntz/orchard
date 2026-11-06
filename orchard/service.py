@@ -8,12 +8,13 @@ import re
 import shutil
 import subprocess
 import threading
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from html import unescape
 from pathlib import Path
 from urllib.parse import urlsplit
-from .db import Database, now, uid, dump, audit
+from .db import ACTOR, Database, now, uid, dump, audit
 from .terms import parse_document, normalize, build_query
 from .providers import EuropePMC, PMCCloud, PDF_LIMIT, Transport, is_pdf, normalize_epmc
 from .repository_sweep import RepositorySweep, DEFAULT_TERMS, classify
@@ -72,13 +73,17 @@ class Service:
         with self.db.connect() as c:
             for row in c.execute("SELECT id FROM runs WHERE status IN ('queued','running')").fetchall():
                 c.execute("UPDATE runs SET status='interrupted',error='Application stopped during search; resume explicitly.' WHERE id=?", (row['id'],))
-                audit(c, 'search_interrupted', row['id'])
+                audit(c, 'search_interrupted', row['id'], actor='system')
             for row in c.execute("SELECT id FROM eyelink_scans WHERE status IN ('queued','running')").fetchall():
                 c.execute("UPDATE eyelink_scans SET status='interrupted',error='Application stopped during the scan; start a new scan.' WHERE id=?", (row['id'],))
-                audit(c, 'eyelink_scan_interrupted', row['id'])
+                audit(c, 'eyelink_scan_interrupted', row['id'], actor='system')
 
     def close(self):
         self.pool.shutdown(wait=True)
+
+    def spawn(self, fn):
+        """Run fn on the worker pool, attributing its audit events to the requesting user."""
+        return self.pool.submit(contextvars.copy_context().run, fn)
 
     def require(self, table, id):
         if table not in ('documents', 'papers', 'queries', 'runs', 'duplicates', 'resources', 'pdfs', 'eyelink_scans'):
@@ -192,7 +197,7 @@ class Service:
             finally:
                 with self.jobs_lock:
                     self.jobs.discard(id)
-        self.pool.submit(job)
+        self.spawn(job)
 
     def resume(self, id):
         run = self.require('runs', id)
@@ -382,6 +387,8 @@ class Service:
             raise ValueError('Invalid screening stage or decision.')
         if decision == 'exclude' and not reason.strip():
             raise ValueError('An exclusion reason is required.')
+        # A signed-in username cannot be overridden by the submitted reviewer field.
+        reviewer = ACTOR.get() or reviewer
         if not reviewer.strip():
             raise ValueError('Reviewer name is required.')
         self.require('papers', id)
@@ -847,7 +854,7 @@ class Service:
             eid=uid(); audit(c,'export_created',eid,{'tables':tables})
             # One read transaction for a consistent snapshot, including this export event.
             data={t:[dict(r) for r in c.execute('SELECT * FROM '+t)] for t in tables}
-        data['manifest']={'schema_version':2,'application_version':'0.1.0','exported_at':now(),
+        data['manifest']={'schema_version':3,'application_version':'0.1.0','exported_at':now(),
                           'counts':{'papers': sum(p['merged_into'] is None for p in data['papers']), 'source_records':len(data['source_records']), 'discovery_events':len(data['discoveries']), 'screening_events':len(data['decisions'])},
                           'study_count':None,'prisma_note':'Records and reports are tracked. Studies are not mapped; study counts and a complete PRISMA diagram are not available.',
                           'pdf_note':'PDF provenance and SHA-256 hashes are exported. PDF files stay in the local data/pdfs folder and are not included.'}

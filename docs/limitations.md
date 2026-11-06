@@ -23,11 +23,11 @@ This is a usable local foundation. It does not meet every acceptance criterion o
 | Link checks | Public URL and redirect checks; an access failure is not proof of a broken link | Distinguish provider outages, restrictions, HTTP errors and transient failures more granularly |
 | Metadata | Rich fields preserved in raw JSON; canonical display exposes a subset | Normalize affiliations, retractions, controlled vocabulary and journal details |
 | Large datasets | Paper list paginated; some inventories/export and duplicate-title scan load full sets | Add indexed duplicate candidate search, paginated inventories and streaming exports |
-| Multiple users | Single local user; stale screening protected; no reviewer accounts/adjudication | Add authentication and reviewer-specific workflows only if needed |
+| Multiple users | Optional hosted mode: proxy-authenticated usernames recorded on every audit event and screening decision; stale screening protected; no roles, permissions or adjudication workflow | Add roles and reviewer-specific workflows only if needed |
 | Merge correction | History retained but no unmerge UI | Add explicit reversible merge events |
 | Database recovery | Resume interrupted searches; manual full-db backup; no JSON restore import | Add validated backup/restore and migration tooling |
 | Query equivalence | Exact query fingerprints, no Boolean-expression equivalence parser | Safely canonicalize only well-understood syntax |
-| Deployment | Local Python server, no hosted website or container deployment | Evaluate hosting separately with authentication and operational hardening |
+| Deployment | Single EC2 instance behind an authenticating nginx proxy, with Litestream/S3 backup ([deploy-aws.md](deploy-aws.md)); not yet exercised on a live AWS account; one process per database, no high availability | Validate the guide on a real instance; add a container image if needed |
 | GitHub | Source archive and push commands provided; no repository write access | User pushes a new branch and reviews a PR |
 
 No raw pupil datasets have been downloaded or reprocessed with eyeris. No reported findings have yet been rechecked. Those are downstream research activities, outside this search platform foundation.
