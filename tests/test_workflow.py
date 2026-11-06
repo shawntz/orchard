@@ -1,9 +1,9 @@
 """Synthetic fixtures only; these are never loaded into the live workspace."""
-import io, json, sqlite3, tempfile, threading, unittest, urllib.request, urllib.error, zipfile
+import hashlib, io, json, sqlite3, tempfile, threading, unittest, urllib.request, urllib.error, zipfile
 from pathlib import Path
 from orchard.service import Service, Conflict, doi_normalize
 from orchard.terms import build_query
-from orchard.providers import EuropePMC, Page, public_url
+from orchard.providers import EuropePMC, PMCCloud, Page, public_url
 from orchard.server import make_server
 
 
@@ -18,10 +18,23 @@ class MockProvider:
         if isinstance(item,Exception): raise item
         return item
 
+PDF=b'%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n'
+
+class MockPdfSource:
+    def __init__(self): self.calls=[]; self.pmc=None; self.links={}
+    def pdf(self,pmcid,callback=None):
+        self.calls.append(pmcid)
+        if self.pmc is None: raise LookupError(pmcid+' not in dataset')
+        return self.pmc,'https://pmc-oa-opendata.s3.amazonaws.com/'+pmcid+'.1/'+pmcid+'.1.pdf',{'license':'CC BY','version':pmcid+'.1'}
+    def download(self,url,callback=None):
+        self.calls.append(url)
+        if url not in self.links: raise ValueError('Response was not a PDF')
+        return self.links[url],url
+
 class Workflow(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.path=Path(self.tmp.name)/'orchard.sqlite3'
-        self.provider=MockProvider(); self.s=Service(self.path,self.provider)
+        self.provider=MockProvider(); self.pdfs=MockPdfSource(); self.s=Service(self.path,self.provider,pdf_source=self.pdfs)
     def tearDown(self): self.s.close(); self.tmp.cleanup()
     def run_records(self,records): return self.s.import_records('synthetic-test.json',records)
     def paper(self,r=None):
@@ -140,7 +153,7 @@ class Workflow(unittest.TestCase):
     def test_persistence_interruption_recovery(self):
         self.paper()
         with self.s.db.connect() as c: c.execute("UPDATE runs SET status='running'")
-        self.s.close(); self.s=Service(self.path,self.provider)
+        self.s.close(); self.s=Service(self.path,self.provider,pdf_source=self.pdfs)
         self.assertEqual(self.s.listing()['total'],1); self.assertEqual(self.s.db.rows('SELECT status FROM runs')[0]['status'],'interrupted')
     def test_audit_append_only(self):
         self.paper()
@@ -182,6 +195,61 @@ class Workflow(unittest.TestCase):
     def test_export_empty_tables_have_csv_headers(self):
         z=zipfile.ZipFile(io.BytesIO(self.s.export_zip()))
         self.assertTrue(z.read('papers.csv').decode().startswith('id,title,'))
+    def test_pdf_upload_stored_with_provenance_and_deduplicated(self):
+        p=self.paper(); stored=self.s.store_pdf(p['id'],PDF,'../../Smith 2024.pdf','Uploaded by researcher: Smith 2024.pdf')
+        self.assertFalse(stored['reused']); self.assertEqual(stored['pdf']['name'],'Smith 2024.pdf'); self.assertEqual(stored['pdf']['sha256'],hashlib.sha256(PDF).hexdigest())
+        row,data=self.s.pdf_file(stored['pdf']['id']); self.assertEqual(data,PDF)
+        self.assertTrue(self.s.store_pdf(p['id'],PDF,'again.pdf','Uploaded again')['reused']); self.assertEqual(len(self.s.paper(p['id'])['pdfs']),1)
+        self.assertEqual(len(self.s.db.rows("SELECT * FROM audit WHERE event='pdf_stored'")),1)
+        with self.assertRaises(ValueError): self.s.store_pdf(p['id'],b'<html>Just a moment...</html>','x.pdf','bot check')
+        with self.assertRaises(KeyError): self.s.store_pdf('missing',PDF,'x.pdf','missing paper')
+    def test_fetch_pdf_prefers_pmc_dataset(self):
+        p=self.paper(record(pmcid='PMC123')); self.pdfs.pmc=PDF
+        stored=self.s.fetch_pdf(p['id'])['pdf']; self.assertEqual(stored['license'],'CC BY'); self.assertIn('pmc-oa-opendata',stored['origin'])
+        self.assertEqual(self.pdfs.calls,['PMC123'])
+    def test_fetch_pdf_falls_back_to_listed_links_and_logs_failures(self):
+        links={'fullTextUrl':[{'documentStyle':'html','url':'https://example.org/article'},{'documentStyle':'pdf','url':'https://blocked.example/a.pdf'},{'documentStyle':'pdf','url':'https://oa.example/paper.pdf'}]}
+        p=self.paper(record(pmcid='PMC123',fullTextUrlList=links)); self.pdfs.links={'https://oa.example/paper.pdf':PDF}
+        stored=self.s.fetch_pdf(p['id'])['pdf']; self.assertEqual((stored['origin'],stored['name']),('https://oa.example/paper.pdf','paper.pdf'))
+        self.assertEqual(self.pdfs.calls,['PMC123','https://blocked.example/a.pdf','https://oa.example/paper.pdf'])
+        self.pdfs.links={}
+        with self.assertRaises(ValueError) as ctx: self.s.fetch_pdf(self.paper(record('2','10.1234/other','Another synthetic report',pmcid='PMC9'))['id'])
+        self.assertIn('upload',str(ctx.exception)); self.assertEqual(len(self.s.db.rows("SELECT * FROM audit WHERE event='pdf_retrieval_failed'")),1)
+    def test_fetch_pdf_without_routes_explains_upload(self):
+        with self.assertRaises(ValueError) as ctx: self.s.fetch_pdf(self.paper()['id'])
+        self.assertIn('upload',str(ctx.exception)); self.assertEqual(self.pdfs.calls,[])
+    def test_pmc_dataset_uses_latest_version_and_checks_md5(self):
+        listing=b'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><CommonPrefixes><Prefix>PMC12.1/</Prefix></CommonPrefixes><CommonPrefixes><Prefix>PMC12.2/</Prefix></CommonPrefixes><CommonPrefixes><Prefix>PMC123.9/</Prefix></CommonPrefixes></ListBucketResult>'
+        def meta(md5): return json.dumps({'pdf_url':'s3://pmc-oa-opendata/PMC12.2/PMC12.2.pdf?md5='+md5,'license_code':'CC BY'}).encode()
+        class Transport:
+            def __init__(self,md5): self.urls=[]; self.md5=md5
+            def get(self,url,**kwargs):
+                self.urls.append(url)
+                return (listing if '?list-type' in url else meta(self.md5) if url.endswith('.json') else PDF),url,{}
+        t=Transport(hashlib.md5(PDF).hexdigest()); data,url,info=PMCCloud(t).pdf('PMC12')
+        self.assertEqual((data,info['version'],info['license']),(PDF,'PMC12.2','CC BY')); self.assertTrue(url.endswith('/PMC12.2/PMC12.2.pdf'))
+        with self.assertRaises(ValueError): PMCCloud(Transport('0'*32)).pdf('PMC12')
+        with self.assertRaises(ValueError): PMCCloud(t).pdf('../etc')
+    def test_export_lists_pdfs_without_files(self):
+        p=self.paper(); self.s.store_pdf(p['id'],PDF,'a.pdf','test')
+        z=zipfile.ZipFile(io.BytesIO(self.s.export_zip())); data=json.loads(z.read('orchard-export.json'))
+        self.assertEqual(data['pdfs'][0]['sha256'],hashlib.sha256(PDF).hexdigest()); self.assertIn('pdfs.csv',z.namelist())
+        self.assertFalse(any(n.endswith('.pdf') for n in z.namelist()))
+    def test_http_pdf_upload_and_inline_viewing(self):
+        p=self.paper(); server=make_server(self.s,0); thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start(); base=f'http://127.0.0.1:{server.server_port}'
+        try:
+            req=urllib.request.Request(base+f'/api/papers/{p["id"]}/pdf?name=Smith%202024.pdf',data=PDF,headers={'Content-Type':'application/pdf'})
+            with urllib.request.urlopen(req) as r: stored=json.load(r)['pdf']
+            with urllib.request.urlopen(base+'/api/pdfs/'+stored['id']) as r:
+                self.assertEqual(r.read(),PDF); self.assertEqual(r.headers['Content-Type'],'application/pdf')
+                self.assertEqual(r.headers['Content-Security-Policy'],"frame-ancestors 'self'"); self.assertTrue(r.headers['Content-Disposition'].startswith('inline; filename="Smith_2024.pdf"'))
+            with urllib.request.urlopen(base+'/') as r: self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy'])
+            for headers,body in (({'Content-Type':'application/json'},b'{}'),({'Content-Type':'application/pdf'},b'not a pdf'),({'Content-Type':'application/pdf','Origin':'https://evil.example'},PDF)):
+                with self.assertRaises(urllib.error.HTTPError) as ctx: urllib.request.urlopen(urllib.request.Request(base+f'/api/papers/{p["id"]}/pdf',data=body,headers=headers))
+                self.assertIn(ctx.exception.code,(400,403))
+            with self.assertRaises(urllib.error.HTTPError) as ctx: urllib.request.urlopen(base+'/api/pdfs/missing')
+            self.assertEqual(ctx.exception.code,404)
+        finally: server.shutdown(); server.server_close(); thread.join()
     def test_http_workflow_and_cross_origin_rejection(self):
         server=make_server(self.s,0); thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start(); base=f'http://127.0.0.1:{server.server_port}'
         try:
