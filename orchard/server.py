@@ -25,7 +25,7 @@ USERNAME=re.compile(r'[^\x00-\x1f\x7f]{1,200}')
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version='Orchard/0.1'
+    server_version='Orchard/0.2'
 
     def send(self, status, body, kind='application/json; charset=utf-8', download=None, inline=None, cache='no-store', csp=CSP):
         if not isinstance(body,bytes): body=json.dumps(body,ensure_ascii=False).encode()
@@ -77,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.valid_host() or not self.identify(): return
         try:
             self.get()
+        except (BrokenPipeError,ConnectionResetError): return  # the browser left (navigation or reload)
         except KeyError as e: self.send(404,{'error':str(e)})
         except ValueError as e: self.send(400,{'error':str(e)})
         except Exception as e:
@@ -87,17 +88,17 @@ class Handler(BaseHTTPRequestHandler):
         parsed=urlparse(self.path); path=parsed.path; args={k:v[-1] for k,v in parse_qs(parsed.query).items()}
         if path=='/api/session': return self.send(200,{'user':ACTOR.get(),'authenticated':bool(self.server.user_header)})
         if path=='/api/overview': return self.send(200,s.overview())
-        if path=='/api/discovery': return self.send(200,discovery.report(s))
-        if path.startswith('/api/discovery/project/'): return self.send(200,discovery.detail(s,path.split('/')[-1]))
+        if path.startswith('/api/discovery'): return self.discovery_get(s,path,args)
         if path.startswith('/api/reader/'):
-            doc=s.db.one('SELECT * FROM discovery_documents WHERE id=?',(path.split('/')[-1],))
-            if not doc: raise KeyError('Document not found')
+            # Documents saved by the earlier prototype, including its PDFs.
+            doc=discovery.document(s,path.split('/')[-1])
             if '/pdf/' in path:
                 if not doc['pdf_path']: raise KeyError('PDF unavailable')
                 file=s.db.path.parent/'pdfs'/doc['pdf_path']
                 if file.parent.resolve()!=(s.db.path.parent/'pdfs').resolve(): raise ValueError('Invalid PDF path')
                 return self.send(200,file.read_bytes(),'application/pdf',csp=PDF_CSP)
             return self.send(200,doc)
+        if path.startswith('/api/fulltexts/'): return self.send(200,discovery.fulltext(s,path.split('/')[-1]))
         if path=='/api/repository-sweeps': return self.send(200,s.db.rows('SELECT * FROM sweep_runs ORDER BY started DESC LIMIT 25'))
         if path.startswith('/api/repository-sweeps/'): return self.send(200,s.repository_results(path.split('/')[-1]))
         if path=='/api/documents': return self.send(200,s.db.rows('SELECT id,name,sha256,created FROM documents ORDER BY rowid DESC'))
@@ -112,6 +113,9 @@ class Handler(BaseHTTPRequestHandler):
             # Stored PDFs are content-addressed and never change, so the browser may keep them.
             return self.send(200,data,'application/pdf',inline=name if name.lower().endswith('.pdf') else name+'.pdf',cache='private, max-age=86400, immutable',csp=PDF_CSP)
         if path=='/api/duplicates': return self.send(200,s.db.rows('SELECT d.*,a.title title_a,b.title title_b,a.year year_a,b.year year_b,a.doi doi_a,b.doi doi_b FROM duplicates d JOIN papers a ON a.id=d.a JOIN papers b ON b.id=d.b ORDER BY d.rowid DESC'))
+        if path.startswith('/api/files/'):
+            row,data=s.file(path.split('/')[-1])
+            return self.send(200,data,'application/pdf',row['sha256'][:16]+'.pdf')
         if path=='/api/resources':
             return self.send(200,s.db.rows('SELECT r.*,p.title FROM resources r JOIN papers p ON p.id=r.paper_id ORDER BY r.rowid DESC'))
         if path=='/api/eyelink': return self.send(200,s.eyelink_scans())
@@ -121,6 +125,8 @@ class Handler(BaseHTTPRequestHandler):
             q=args.get('q','')
             return self.send(200,s.db.rows('SELECT * FROM audit WHERE event LIKE ? OR entity_id LIKE ? OR actor LIKE ? ORDER BY id DESC LIMIT 100 OFFSET ?',('%'+q+'%','%'+q+'%','%'+q+'%',(page-1)*100)))
         if path=='/api/export':
+            if args.get('format')=='prisma':
+                return self.send(200,discovery.prisma_text(discovery.funnel(s)).encode(),'text/plain; charset=utf-8','orchard-repository-prisma.txt')
             if args.get('format')=='json':
                 return self.send(200,json.dumps(s.export(),ensure_ascii=False,indent=2).encode(),download='orchard-export.json')
             return self.send(200,s.export_zip(),'application/zip','orchard-export.zip')
@@ -145,6 +151,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data,dict): raise ValueError('JSON object required.')
             result=self.post(urlparse(self.path).path,data)
             self.send(200,result or {'ok':True})
+        except (BrokenPipeError,ConnectionResetError): return
         except Conflict as e: self.send(409,{'error':str(e)})
         except KeyError as e: self.send(404,{'error':str(e)})
         except (ValueError,TypeError) as e: self.send(400,{'error':str(e)})
@@ -159,12 +166,38 @@ class Handler(BaseHTTPRequestHandler):
         name=parse_qs(parsed.query).get('name',['article.pdf'])[-1]
         return self.server.service.store_pdf(parsed.path.split('/')[-2],self.rfile.read(size),name,'Uploaded by researcher: '+name)
 
+    def discovery_get(self,s,path,args):
+        if path=='/api/discovery': return self.send(200,discovery.overview(s))
+        if path=='/api/discovery/projects': return self.send(200,discovery.projects(s,**{k:v for k,v in args.items() if k in ('q','match','relevance','decision','page')}))
+        if path.startswith('/api/discovery/project/'): return self.send(200,discovery.project_detail(s,path.split('/')[-1]))
+        if path.startswith('/api/discovery/jobs/'): return self.send(200,discovery.job_detail(s,path.split('/')[-1]))
+        if path.startswith('/api/discovery/documents/'): return self.send(200,discovery.document(s,path.split('/')[-1]))
+        if path.startswith('/api/discovery/downloads/'): return self.send(200,discovery.batch_detail(s,path.split('/')[-1]))
+        if path=='/api/discovery/config': return self.send(200,discovery.config_view(s))
+        if path=='/api/discovery/funnel': return self.send(200,discovery.funnel(s))
+        raise KeyError('Unknown discovery resource.')
+
+    def discovery_post(self,s,op,b):
+        pick=lambda *keys: {k:b[k] for k in keys if k in b}
+        if op=='start': return discovery.start(s,b)
+        if op=='cancel': return discovery.cancel(s,b['job_id'])
+        if op=='resume': return discovery.resume(s,b['job_id'])
+        if op=='inspect': return discovery.inspect(s,b['project_id'])
+        if op=='assess': discovery.assess(s,b['project_id']); return discovery.project_detail(s,b['project_id'])
+        if op=='publication': return discovery.publication_action(s,**pick('project_id','action','reviewer','reason','candidate_id','doi','url','title','authors','year','force'))
+        if op=='retrieve': return discovery.retrieve(s,b['project_id'],b['paper_id'])
+        if op=='decision': return discovery.decide(s,**pick('project_id','decision','reason','reviewer','exclusion_reason','evidence','version','criteria_id'))
+        if op=='study': return discovery.study_action(s,**pick('project_id','action','reviewer','study_id','label','note'))
+        if op=='relation': return discovery.relation_action(s,**pick('relation_id','status','reviewer','reason'))
+        if op=='config': return discovery.save_config(s,b.get('text'),b.get('document_id'))
+        if op=='download-plan': return discovery.download_plan(s,b['project_id'],b.get('file_ids'))
+        if op=='download': return discovery.download(s,b['project_id'],b.get('file_ids'),b.get('reviewer'),bool(b.get('confirm_large')))
+        if op=='download-action': return discovery.download_action(s,b['batch_id'],b['action'])
+        raise KeyError('Unknown discovery operation.')
+
     def post(self,path,b):
         s=self.server.service
-        if path=='/api/discovery/start': return discovery.start(s,b)
-        if path=='/api/discovery/inspect': return discovery.discover(s,b['project_id'],b.get('terms'))
-        if path=='/api/discovery/retrieve': return discovery.retrieve(s,**b)
-        if path=='/api/discovery/decision': return discovery.decision(s,**b)
+        if path.startswith('/api/discovery/'): return self.discovery_post(s,path[len('/api/discovery/'):],b)
         if path=='/api/project': return s.set_project(b.get('name',''),b.get('question',''))
         if path=='/api/documents': return s.import_document(b.get('name','Imported text'),b.get('text',''))
         if path=='/api/queries': return s.save_query(**b)
