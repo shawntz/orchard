@@ -1,5 +1,5 @@
 """EyeLink finder tests. Synthetic PDFs, repositories and files only; no network access."""
-import io, json, re, tempfile, unittest, zipfile, zlib
+import gzip, io, json, re, tempfile, unittest, zipfile, zlib
 from pathlib import Path
 from orchard import eyelink
 from orchard.service import Service
@@ -121,7 +121,7 @@ class Files(unittest.TestCase):
         self.assertEqual(eyelink.header_kind(EEG_EDF, 'edf'), 'european_data_format')
         self.assertEqual(eyelink.header_kind(EYELINK_ASC, 'asc'), 'eyelink')
         self.assertEqual(eyelink.header_kind(b'ncols 10\nnrows 10\n', 'asc'), 'unrecognized')
-        self.assertEqual(eyelink.header_kind(zlib.compress(EYELINK_ASC, wbits=31), 'asc'), 'eyelink')
+        self.assertEqual(eyelink.header_kind(gzip.compress(EYELINK_ASC), 'asc'), 'eyelink')
         self.assertEqual(eyelink.file_kind('S1.EDF'), 'edf'); self.assertEqual(eyelink.file_kind('s1.asc.gz'), 'asc')
 
     def test_remote_zip_listed_and_member_probed_with_ranges(self):

@@ -1,7 +1,8 @@
 """Hosted mode: proxy-authenticated usernames are recorded on every audit event."""
 import json, sqlite3, tempfile, threading, time, unittest, urllib.request, urllib.error
 from pathlib import Path
-from orchard.db import Database
+from orchard.db import ACTOR, Database
+from orchard import discovery
 from orchard.service import Service
 from orchard.providers import Page
 from orchard.server import make_server
@@ -99,5 +100,40 @@ class Configuration(unittest.TestCase):
             self.assertIsNone(db.one("SELECT actor FROM audit WHERE event='old_event'")['actor'])
             self.assertIn(3,[r['version'] for r in db.rows('SELECT version FROM schema_version')])
 
+
+    def test_database_from_either_version_3_build_gains_the_other_columns(self):
+        # Hosted mode and multi-provider search each shipped a "version 3"; both halves must apply.
+        for existing in ("CREATE TABLE audit(id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, entity_id TEXT, detail TEXT NOT NULL, created TEXT NOT NULL, actor TEXT);",
+                         "CREATE TABLE runs(id TEXT PRIMARY KEY, query_id TEXT, query TEXT NOT NULL, provider TEXT NOT NULL, fingerprint TEXT NOT NULL, parameters TEXT NOT NULL, status TEXT NOT NULL, created TEXT NOT NULL, finished TEXT, cursor TEXT, retrieved INTEGER NOT NULL DEFAULT 0, total INTEGER, error TEXT, refresh_of TEXT, batch_id TEXT);"):
+            with self.subTest(existing=existing[:30]), tempfile.TemporaryDirectory() as tmp:
+                path=Path(tmp)/'orchard.sqlite3'
+                c=sqlite3.connect(path); c.executescript(existing+'CREATE TABLE schema_version(version INTEGER PRIMARY KEY); INSERT INTO schema_version VALUES(3);'); c.commit(); c.close()
+                db=Database(path)
+                self.assertIn('actor',[r['name'] for r in db.rows('PRAGMA table_info(audit)')])
+                self.assertIn('batch_id',[r['name'] for r in db.rows('PRAGMA table_info(runs)')])
+                self.assertTrue(db.one("SELECT name FROM sqlite_master WHERE name='files'"))
+
+
+class RepositoryDiscoveryHosted(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.s=Service(Path(self.tmp.name)/'orchard.sqlite3',MockProvider(),pdf_source=MockPdfSource())
+
+    def tearDown(self):
+        if hasattr(self.s,'discovery_pool'): self.s.discovery_pool.shutdown(wait=True)
+        self.s.close(); self.tmp.cleanup()
+
+    def test_signed_in_user_is_the_repository_reviewer(self):
+        token=ACTOR.set('carol')
+        try: self.assertEqual(discovery.reviewer_name('someone else'),'carol')
+        finally: ACTOR.reset(token)
+        self.assertEqual(discovery.reviewer_name(' Local researcher '),'Local researcher')
+        with self.assertRaises(ValueError): discovery.reviewer_name('')
+
+    def test_discovery_background_work_carries_requester(self):
+        token=ACTOR.set('erin')
+        try: future=discovery.submit(self.s,ACTOR.get)
+        finally: ACTOR.reset(token)
+        self.assertEqual(future.result(timeout=10),'erin')
 
 if __name__=='__main__': unittest.main()

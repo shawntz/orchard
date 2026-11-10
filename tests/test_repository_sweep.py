@@ -68,7 +68,7 @@ class RepositoryTests(unittest.TestCase):
             s=Service(Path(path)/'db.sqlite3',Provider())
             try:
                 with s.db.connect() as c:
-                    c.execute('INSERT INTO sweep_projects VALUES(?,?,?,?,?,?,?,?)',('p','dryad','d','https://datadryad.org/d','Study','Abstract','10.1234/article',None))
+                    c.execute('INSERT INTO sweep_projects(id,repository,external_id,url,title,description,doi,paper_id) VALUES(?,?,?,?,?,?,?,?)',('p','dryad','d','https://datadryad.org/d','Study','Abstract','10.1234/article',None))
                 review=s.review_repository_article('p')
                 self.assertEqual(review['status'],'candidate')
                 self.assertIn('europepmc.org',review['text_source'])

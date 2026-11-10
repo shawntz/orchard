@@ -1,3 +1,10 @@
+# Validation performed for 0.2 (multi-source search and full text)
+
+- **63 automated tests passed** (`python -m unittest discover -s tests -v`), with and without `pypdf` installed. New tests cover per-provider runs and batches, cross-source DOI and PMID consolidation, metadata filling, provider selection and strict reuse, unconfigured providers, fielded-query rejection, isolated provider failure, resume for non-Europe-PMC runs, the full-text fallback order (XML → known PDFs → identifier routes → locators), HTML-instead-of-PDF detection, lookup-discovered PMCIDs, failure auditing, unreadable PDFs, PDF download over HTTP, schema 1→2 migration, each normalizer, OpenAlex/Semantic Scholar paging and Semantic Scholar query translation.
+- **Live providers (2026-10-22):** `scripts/live_smoke.py` succeeded for Europe PMC, PubMed, OpenAlex and Semantic Scholar search, and for Europe PMC, OpenAlex, Semantic Scholar and Crossref lookup. CORE and Unpaywall were not exercised (no key/email configured).
+- **Live end-to-end:** one query (`pupillometry AND "working memory"`, cap 25 per source) across four sources stored 100 source records as 79 papers; 18 papers were found by two or more sources. Full-text retrieval succeeded via Europe PMC XML for a PMC paper and via OpenAlex-located PDFs (bioRxiv, Research Square) for papers Europe PMC could not supply. Two papers had no retrievable open copy, and every attempt was recorded. `pypdf` extracted readable text from both PDFs; the standard-library fallback correctly declined them.
+- The 0.1 notes below are retained for history.
+
 # Validation performed for 0.1
 
 ## Passing checks
@@ -21,6 +28,6 @@ Document validation, original wording/hash preservation, exact-duplicate normali
 - **Real full-text and link verification:** depend on external access and were not validated against live resources. Failure behavior and evidence extraction were tested with fixtures.
 - **Real browser/visual testing:** Playwright was available, but its Chromium executable was missing. Launch failed before a page could be opened. Responsive layout, accessibility interactions, downloads, dialogs and end-to-end browser behavior need testing on the user's computer.
 - **GitHub:** no push, pull request, or GitHub Actions run has occurred. The original ZIP contained only a README; the user can push the supplied source to a new branch.
-- **Other providers:** no live or simulated claim of OpenAlex/Crossref/Semantic Scholar integration is made. Only Europe PMC normalization is implemented.
+- **Other providers:** (0.1 only; superseded in 0.2) no OpenAlex/Crossref/Semantic Scholar integration existed.
 
 See `limitations.md` for the remaining requirements. Passing these checks does not establish that the full original V1 acceptance checklist has been satisfied.
