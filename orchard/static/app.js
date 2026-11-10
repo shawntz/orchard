@@ -93,5 +93,6 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
  else if(act==='audit-next'||act==='audit-prev'){state.auditPage=Math.max(1,(state.auditPage||1)+(act==='audit-next'?1:-1));await render();}
  }catch(e){toast(e.message,true);}finally{el.disabled=false;}});
 api('session').then(s=>{if(!s.user)return;state.user=s.user;const foot=$('.aside-foot');foot.textContent='';const line=document.createElement('span');line.innerHTML='<span class="dot"></span> Signed in as ';const name=document.createElement('strong');name.textContent=s.user;foot.append(line,name,document.createElement('br'),Object.assign(document.createElement('small'),{textContent:'Your actions are recorded under this username.'}));render();}).catch(()=>{});
+api('version').then(b=>{const el=$('#build-info');el.textContent='v'+b.version+' · '+(b.commit_short||'commit unknown');el.title=b.commit?'Commit '+b.commit:'Commit SHA unavailable';el.hidden=false;}).catch(()=>{});
 render();
 setInterval(()=>{if((location.hash==='#history'||location.hash==='#eyelink'||(location.hash.startsWith('#paper/')&&state.scanActive))&&!document.activeElement?.matches('input,textarea,select'))render();},5000);
