@@ -15,6 +15,7 @@ from urllib.parse import urlparse, parse_qs
 from .db import ACTOR
 from .service import Service, Conflict
 from . import discovery
+from .buildinfo import build_info
 from .providers import PDF_LIMIT
 
 STATIC=Path(__file__).parent/'static'
@@ -87,6 +88,7 @@ class Handler(BaseHTTPRequestHandler):
         s=self.server.service
         parsed=urlparse(self.path); path=parsed.path; args={k:v[-1] for k,v in parse_qs(parsed.query).items()}
         if path=='/api/session': return self.send(200,{'user':ACTOR.get(),'authenticated':bool(self.server.user_header)})
+        if path=='/api/version': return self.send(200,self.server.build)
         if path=='/api/overview': return self.send(200,s.overview())
         if path.startswith('/api/discovery'): return self.discovery_get(s,path,args)
         if path.startswith('/api/reader/'):
@@ -240,6 +242,7 @@ def make_server(service,port=8765,public_url=None,user_header=None):
     if user_header is not None and not re.fullmatch(r'[A-Za-z0-9-]+',user_header):
         raise ValueError('--user-header must be a plain HTTP header name such as X-Remote-User.')
     server.user_header=user_header or None
+    server.build=build_info()  # read once: the commit this process loaded, not whatever is checked out later
     return server
 
 
@@ -259,6 +262,8 @@ def main():
     except (OSError,ValueError):
         service.close(); raise
     print(f'Orchard is running at http://127.0.0.1:{server.server_port}',flush=True)
+    build=server.build
+    print(f"Version {build['version']} (commit {build['commit'] or 'unknown'})",flush=True)
     print(f'Database: {data / "orchard.sqlite3"}',flush=True)
     if args.public_url: print(f'Accepting proxied requests for {args.public_url}',flush=True)
     if args.user_header: print(f'Signed-in username read from the {args.user_header} header',flush=True)

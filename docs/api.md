@@ -5,6 +5,7 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | Method / route | Body or query | Result |
 |---|---|---|
 | GET `/session` | — | `{"user": <signed-in username or null>, "authenticated": <hosted mode?>}` |
+| GET `/version` | — | `{"version": "0.2.0", "commit": <full git SHA or null>, "commit_short": <7-char SHA or null>}`. Read once at server start, so it names the code the running process loaded. Shown in the bottom-left corner of the sidebar. |
 | GET `/overview` | — | Project, current criteria, actual DB counts, recent runs and `providers` (search/lookup role, configured state, note) |
 | POST `/project` | `name`, `question` | Save project wording with audit history |
 | GET `/documents` | — | Imported document metadata |

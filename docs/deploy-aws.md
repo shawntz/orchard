@@ -502,6 +502,8 @@ sudo systemctl restart orchard
 sudo journalctl -u orchard -n 20 --no-pager
 ```
 
+To confirm which build is live, look at the bottom-left corner of the sidebar (for example `v0.2.0 · 04e321f`; hover for the full SHA), or run `curl -s -H 'X-Remote-User: check' -H "Host: $DOMAIN" http://127.0.0.1:8765/api/version` on the instance. The startup log line `Version … (commit …)` shows the same. The commit is read from `/opt/orchard/.git` when Orchard starts, so the page only changes after `systemctl restart orchard`. If you deploy without a `.git` folder, set `ORCHARD_COMMIT=<sha>` in `/etc/orchard/orchard.env`.
+
 Schema changes are additive and applied at startup. For example, adding the `actor` column is schema version 3. Jobs running at restart become `interrupted` (see §9), so restart when nothing important is running.
 
 ---
