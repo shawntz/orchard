@@ -149,3 +149,7 @@ docs/               architecture, API, limitations, validation and AWS deploymen
 data/               local research database (ignored by Git)
 .github/workflows/  automated test configuration
 ```
+
+## License
+
+Orchard is released under the [MIT License](LICENSE).
