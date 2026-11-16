@@ -196,9 +196,21 @@ class Jobs(Base):
         self.assertTrue(log and 'q=pupil+size' in log[0]['url'] and log[0]['reported_total'] == 1)
 
     def test_invalid_parameters_rejected(self):
-        for bad in ({'sources': ['figshare']}, {'phrases': []}, {'extensions': ['csv']}, {'max_pages': 0}):
+        for bad in ({'sources': ['figshare']}, {'phrases': ['x' * 81]}, {'phrases': ['x'] * 21}, {'extensions': ['csv']}, {'max_pages': 0}):
             with self.assertRaises(ValueError):
                 D.start(self.s, {'sources': ['osf'], 'phrases': ['x'], **bad}, background=False)
+
+    def test_search_runs_without_phrases(self):
+        for empty in ([], '', '\n  \n', ['  ']):
+            with self.subTest(phrases=empty):
+                job = self.run_search(sources=['zenodo'], phrases=empty, max_projects=0)
+                stored = json.loads(self.s.db.one('SELECT parameters FROM discovery_jobs WHERE id=?', (job['id'],))['parameters'])
+                self.assertEqual(stored['phrases'], [])
+                self.assertEqual({t['kind'] for t in job['tasks']}, {'file_index'})
+
+    def test_phraseless_search_with_nothing_to_run_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'Nothing to search'):
+            D.start(self.s, {'sources': ['dryad'], 'phrases': []}, background=False)
 
 
 class PageLoad(Base):
