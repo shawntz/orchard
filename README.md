@@ -82,6 +82,23 @@ Each scan stores a verdict: `eyelink_confirmed`, `eyelink_candidates`, `archives
 
 Optional environment variables: `ORCHARD_CONTACT_EMAIL` or `ORCHARD_UNPAYWALL_EMAIL` (enables Unpaywall PDF lookup) and `ORCHARD_GITHUB_TOKEN` or `GITHUB_TOKEN` (raises GitHub's 60 requests/hour anonymous limit). Installing `pypdf` (`pip install pypdf`) improves PDF text extraction; without it a built-in reader handles common PDFs and always reads clickable link annotations.
 
+## Copying project data to an S3 bucket
+
+On a repository project page (repository discovery), **Copy all files to S3…** sends every downloadable file listed for that project to an Amazon S3 bucket. You can also tick individual files, choose **Review download…**, and pick the S3 bucket as the destination. Orchard shows the file count, total size, destination and any files it must skip (sign-in required, restricted, or inside an archive) before anything starts.
+
+Each file is downloaded to a staging folder on the Orchard machine and checked against the repository's listed size and checksum. Only verified files are uploaded. The object key mirrors the repository path, e.g. `s3://BUCKET/repository-data/osf_ctd34/Experiment 1/Pupil_Data/pp02.asc`, and each object stores its SHA-256 as `x-amz-meta-sha256`. Uploads are signed with AWS Signature V4 including the SHA-256 of every part, so S3 rejects bytes that changed in transit. Files over 16 MB use multipart upload. An `orchard-manifest.json` describing the batch is uploaded next to the files. A failed or cancelled upload can be resumed without downloading the file again, and a file already in the bucket with the same SHA-256 is not uploaded twice. The staging copy is deleted once its upload succeeds, unless `ORCHARD_S3_KEEP_LOCAL=1`.
+
+| Variable | Effect |
+|---|---|
+| `ORCHARD_S3_BUCKET` | Bucket name. The S3 button is inactive (it shows setup instructions) until this is set |
+| `ORCHARD_S3_PREFIX` | Key prefix, default `repository-data/` |
+| `ORCHARD_S3_REGION` | Bucket region. Defaults to `AWS_REGION`/`AWS_DEFAULT_REGION`, then the EC2 instance's region; a wrong guess is corrected from S3's redirect |
+| `ORCHARD_S3_STORAGE_CLASS` | Optional, e.g. `INTELLIGENT_TIERING` or `STANDARD_IA` |
+| `ORCHARD_S3_KEEP_LOCAL` | `1` keeps the local staging copy after upload |
+| `ORCHARD_S3_ENDPOINT` | Optional S3-compatible endpoint (MinIO etc.), path-style |
+
+Credentials come from the standard AWS sources, in this order: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`(/`AWS_SESSION_TOKEN`), the shared credentials file (`~/.aws/credentials`, profile `AWS_PROFILE`), the ECS container role, then the EC2 instance role (IMDSv2). No AWS SDK is needed. The identity needs `s3:PutObject`, `s3:GetObject` and `s3:AbortMultipartUpload` on the bucket's objects. On the hosted setup in [docs/deploy-aws.md](docs/deploy-aws.md#copying-repository-data-to-s3), the instance role already has access.
+
 The same check works without the app, on a PDF file, PDF URL, or repository link:
 
 ```bash
@@ -143,6 +160,8 @@ orchard/
   pdftext.py        best-effort PDF text extraction
   service.py        search, ingestion, screening and exports
   eyelink.py        PDF reading, repository listings and EyeLink file detection
+  downloads.py      verified, resumable repository-file downloads and manifests
+  s3.py             standard-library S3 client (SigV4, AWS credential chain, multipart)
   static/           HTML, CSS and browser JavaScript
 scripts/            source import and optional live API check
 tests/              isolated synthetic workflow tests

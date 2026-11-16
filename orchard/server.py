@@ -192,8 +192,8 @@ class Handler(BaseHTTPRequestHandler):
         if op=='study': return discovery.study_action(s,**pick('project_id','action','reviewer','study_id','label','note'))
         if op=='relation': return discovery.relation_action(s,**pick('relation_id','status','reviewer','reason'))
         if op=='config': return discovery.save_config(s,b.get('text'),b.get('document_id'))
-        if op=='download-plan': return discovery.download_plan(s,b['project_id'],b.get('file_ids'))
-        if op=='download': return discovery.download(s,b['project_id'],b.get('file_ids'),b.get('reviewer'),bool(b.get('confirm_large')))
+        if op=='download-plan': return discovery.download_plan(s,b['project_id'],b.get('file_ids'),b.get('target') or 'local')
+        if op=='download': return discovery.download(s,b['project_id'],b.get('file_ids'),b.get('reviewer'),bool(b.get('confirm_large')),target=b.get('target') or 'local')
         if op=='download-action': return discovery.download_action(s,b['batch_id'],b['action'])
         raise KeyError('Unknown discovery operation.')
 

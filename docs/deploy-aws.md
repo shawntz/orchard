@@ -95,7 +95,7 @@ EOF
 cat > orchard-s3.json <<EOF
 {"Version":"2012-10-17","Statement":[
   {"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":"arn:aws:s3:::$BUCKET"},
-  {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::$BUCKET/*"}
+  {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload"],"Resource":"arn:aws:s3:::$BUCKET/*"}
 ]}
 EOF
 
@@ -108,7 +108,7 @@ aws iam create-instance-profile --instance-profile-name orchard-ec2
 aws iam add-role-to-instance-profile --instance-profile-name orchard-ec2 --role-name orchard-ec2
 ```
 
-`s3:DeleteObject` is needed because Litestream prunes its own old WAL segments. With versioning on, a deleted object is still recoverable for 90 days.
+`s3:DeleteObject` is needed because Litestream prunes its own old WAL segments. With versioning on, a deleted object is still recoverable for 90 days. `s3:AbortMultipartUpload` lets Orchard clean up a large repository-file upload that was cancelled or failed ([§8](#copying-repository-data-to-s3)). If you created the policy before this permission was listed, re-run the `put-role-policy` command above.
 
 ---
 
@@ -189,6 +189,11 @@ ORCHARD_USER_HEADER=X-Remote-User
 # Optional:
 # ORCHARD_UNPAYWALL_EMAIL=lab@example.org
 # ORCHARD_GITHUB_TOKEN=
+# Enables "Copy all files to S3" on repository projects (§8). Uses the instance role.
+ORCHARD_S3_BUCKET=$BUCKET
+ORCHARD_S3_REGION=$REGION
+# ORCHARD_S3_PREFIX=repository-data/
+# ORCHARD_S3_STORAGE_CLASS=INTELLIGENT_TIERING
 EOF
 sudo chmod 640 /etc/orchard/orchard.env
 sudo chown root:orchard /etc/orchard/orchard.env
@@ -384,9 +389,10 @@ PDFs are named by their SHA-256 and never change, so a plain `aws s3 sync` is sa
 sudo tee /usr/local/bin/orchard-s3-sync >/dev/null <<EOF
 #!/bin/sh
 set -eu
-# Everything except the live SQLite files (Litestream handles those) and partial uploads.
+# Everything except the live SQLite files (Litestream handles those), partial uploads, and
+# repository-file staging (Orchard uploads verified repository data itself; see below).
 exec aws s3 sync /var/lib/orchard "s3://$BUCKET/files/" \\
-     --exclude 'orchard.sqlite3*' --exclude '*.tmp-*' --exclude '.*' --only-show-errors
+     --exclude 'orchard.sqlite3*' --exclude '*.tmp-*' --exclude '.*' --exclude 'downloads/*' --only-show-errors
 EOF
 
 sudo tee /usr/local/bin/orchard-snapshot >/dev/null <<EOF
@@ -433,6 +439,20 @@ aws s3 ls "s3://$BUCKET/" --recursive | head
 ```
 
 The daily snapshot gives you a plain SQLite file you can download and open anywhere, independent of Litestream.
+
+### Copying repository data to S3
+
+With `ORCHARD_S3_BUCKET` set (§6), every repository project page has a **Copy all files to S3…** button. It sends every downloadable file listed for the project to `s3://$BUCKET/repository-data/<repository>_<id>/…`, keeping the repository's folder layout, plus an `orchard-manifest.json` for the batch. The transfer runs as a background job, like a search. It is recorded in the audit trail under the user who started it, and keeps running if the browser closes.
+
+Each file is staged under `/var/lib/orchard/downloads/`, verified against the repository's size and checksum, uploaded, and then deleted from the disk. Disk use is therefore about one file at a time, not the whole dataset. Credentials come from the instance role created in §4, so no keys are stored on the server. Orchard reaches the EC2 metadata service at a fixed address for those credentials only. The request guard still refuses metadata and other private addresses for every user-supplied or repository URL.
+
+Repository data does not change once written, so you can move it to a cheaper storage class: set `ORCHARD_S3_STORAGE_CLASS=INTELLIGENT_TIERING`, or add a lifecycle rule for the `repository-data/` prefix. Exclude that prefix from any rule that expires old object versions if you want deleted data to stay recoverable.
+
+Check a transfer from the instance:
+
+```bash
+aws s3 ls "s3://$BUCKET/repository-data/" --recursive --human-readable | head
+```
 
 ---
 
@@ -544,3 +564,8 @@ Test a restore onto a scratch instance once after setup, so you know it works be
 | `ORCHARD_PUBLIC_URL` | `--public-url` | Public `https://host` users browse to. Adds that Host/Origin to the allow-list. Requires `ORCHARD_USER_HEADER`. |
 | `ORCHARD_USER_HEADER` | `--user-header` | Header carrying the proxy-authenticated username. When set, requests without it get HTTP 401, and the value is recorded as `actor` on every audit event. |
 | — | `--port` | Loopback port (default 8765). Orchard never listens on a public interface. |
+| `ORCHARD_S3_BUCKET` | — | Bucket for **Copy all files to S3** on repository projects. Unset disables the feature. |
+| `ORCHARD_S3_PREFIX` | — | Key prefix for copied repository data (default `repository-data/`). |
+| `ORCHARD_S3_REGION` | — | Bucket region (falls back to `AWS_REGION`, then the instance's region). |
+| `ORCHARD_S3_STORAGE_CLASS` | — | Optional storage class for copied data, e.g. `INTELLIGENT_TIERING`. |
+| `ORCHARD_S3_KEEP_LOCAL` | — | `1` keeps the staged copy in `downloads/` after upload. |

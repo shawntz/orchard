@@ -41,6 +41,9 @@ Base URL: `http://127.0.0.1:8765/api`. Local Host/Origin checks apply; no CORS a
 | GET `/eyelink/{id}` | — | Scan steps, repository checks, evidence, and `.edf`/`.asc`/archive rows |
 | GET `/audit` | `page`, `q` | Newest-first events, 100/page; `q` matches event, record ID or `actor` username |
 | GET `/export` | optional `format=json` | ZIP (CSV + JSON + report), or JSON |
+| POST `/discovery/download-plan` | `project_id`, `file_ids` (array, or `"all"` for every file listed in the project's current inventory), optional `target` (`local` default, or `s3`) | Files, skipped files with reasons, total size and destination (`s3://…` for `s3`). 400 if `s3` is requested but `ORCHARD_S3_BUCKET` is unset |
+| POST `/discovery/download` | Same as the plan, plus `reviewer`, `confirm_large` | Queues the batch. For `s3`, each verified file is uploaded and the manifest is written to the bucket. Items carry `uploaded` (timestamp) and `upload_detail` |
+| POST `/discovery/download-action` | `batch_id`, `action` (`cancel`, `resume`) | Resume re-uploads verified staged files without downloading them again |
 
 Title/abstract decisions: `include`, `exclude`, `uncertain`, `needs_information`.
 Full-text decisions: `include`, `exclude`, `uncertain`, `awaiting_fulltext`, `inaccessible`.

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .db import ACTOR, uid, now, dump, audit
-from . import articles, downloads as dl, eyelink, inventory as inv, publications as pubs, repositories as repos, screening
+from . import articles, downloads as dl, eyelink, inventory as inv, publications as pubs, repositories as repos, s3, screening
 
 SCHEMA_VERSION = 4
 LEGACY = '''
@@ -72,6 +72,11 @@ COLUMNS = {
     'discovery_documents': ['status TEXT', 'method TEXT', 'words INTEGER', 'quality_reason TEXT'],
     'discovery_candidates': ['url TEXT', 'authors TEXT', 'year TEXT', 'venue TEXT', 'kind TEXT', 'strength TEXT', 'evidence TEXT', 'search_id TEXT'],
 }
+# Columns added to tables created in TABLES (so they are applied after it).
+LATE_COLUMNS = {
+    'download_batches': ['target TEXT', 'remote TEXT'],
+    'downloads': ['remote_key TEXT', 'uploaded TEXT', 'upload_detail TEXT'],
+}
 ACTIVE = ('queued', 'running', 'inspecting')
 MATCHING = ('eyelink_confirmed', 'candidate_files', 'no_study_recordings')
 RESUMABLE = ('partial', 'failed', 'rate_limited', 'cancelled', 'interrupted', 'pending')
@@ -106,6 +111,11 @@ def setup(s):
                 if col.split()[0] not in existing:
                     c.execute(f'ALTER TABLE {table} ADD COLUMN {col}')
         c.executescript(TABLES)
+        for table, cols in LATE_COLUMNS.items():
+            existing = columns(c, table)
+            for col in cols:
+                if col.split()[0] not in existing:
+                    c.execute(f'ALTER TABLE {table} ADD COLUMN {col}')
         migrate_legacy(c)
         c.execute('INSERT OR IGNORE INTO schema_version VALUES(?)', (SCHEMA_VERSION,))
         c.execute("UPDATE discovery_jobs SET status='interrupted',error='Orchard stopped while this job ran. Resume continues from the saved page cursors.',updated=? WHERE status IN ('queued','running','inspecting','searching','reading_documentation')", (now(),))
@@ -998,12 +1008,52 @@ def relation_action(s, relation_id, status, reviewer=None, reason=''):
 
 # --------------------------------------------------------------------------- downloads
 
-def download_plan(s, project_id, file_ids):
+VERIFIED = ('verified', 'size_verified')
+TARGETS = ('local', 's3')
+
+
+def s3_config():
+    """The configured bucket, or a clear error saying how to configure one."""
+    cfg = s3.Config.from_env()
+    if not cfg:
+        raise ValueError('No S3 bucket is configured. Set ORCHARD_S3_BUCKET (and optionally ORCHARD_S3_PREFIX and ORCHARD_S3_REGION) and restart Orchard.')
+    return cfg
+
+
+def s3_client(s, cfg):
+    """One client per bucket configuration; tests set ``s.s3_client`` to a fake."""
+    if getattr(s, 's3_client', None) is not None:
+        return s.s3_client
+    key = (cfg.bucket, cfg.prefix, cfg.region, cfg.endpoint, cfg.storage_class)
+    cached = getattr(s, '_s3_clients', None)
+    if cached is None:
+        cached = s._s3_clients = {}
+    if key not in cached:
+        cached[key] = s3.Client(cfg)
+    return cached[key]
+
+
+def done(row, batch):
+    """A file is finished once verified locally and, for S3 batches, uploaded."""
+    return row['status'] in VERIFIED and (batch.get('target') != 's3' or bool(row.get('uploaded')))
+
+
+def download_plan(s, project_id, file_ids, target='local'):
+    """Plan a download of the selected files, or of every listed file when ``file_ids`` is ``'all'``."""
     setup(s)
     p = project_row(s, project_id)
+    if target not in TARGETS:
+        raise ValueError('Destination must be local or s3.')
+    cfg = s3_config() if target == 's3' else None
+    if file_ids == 'all':
+        clause, args = ('AND inventory_id=?', (project_id, p['inventory_id'])) if p['inventory_id'] else ('', (project_id,))
+        file_ids = [r['id'] for r in s.db.rows(f'SELECT id FROM sweep_files WHERE project_id=? {clause} ORDER BY path', args)]
+        if not file_ids:
+            raise ValueError('This project has no listed files. Re-inspect it first.')
     if not isinstance(file_ids, list) or not file_ids:
         raise ValueError('Select at least one file.')
     root = Path(s.db.path).parent / 'downloads'
+    folder = dl.target_path(root, p['repository'], p['external_id'], 'x').parent
     rows, blocked = [], []
     for fid in dict.fromkeys(file_ids):
         f = s.db.one('SELECT * FROM sweep_files WHERE id=? AND project_id=?', (fid, project_id))
@@ -1017,27 +1067,36 @@ def download_plan(s, project_id, file_ids):
         size = f['size']
         if f['download'] == 'lfs_object':
             size = json.loads(f['header_details'] or '{}').get('size') or size
-        rows.append({'file_id': f['id'], 'path': f['path'], 'url': url, 'size': size, 'checksum': f['checksum'],
-                     'dest': str(dl.target_path(root, p['repository'], p['external_id'], f['path'])), 'role': f['role']})
+        dest = dl.target_path(root, p['repository'], p['external_id'], f['path'])
+        row = {'file_id': f['id'], 'path': f['path'], 'url': url, 'size': size, 'checksum': f['checksum'], 'dest': str(dest), 'role': f['role']}
+        if cfg:
+            row['remote_key'] = cfg.prefix + dest.relative_to(root.resolve()).as_posix()
+            row['remote'] = cfg.uri(row['remote_key'])
+        rows.append(row)
     total = sum(r['size'] or 0 for r in rows)
-    return {'project_id': project_id, 'destination': str(dl.target_path(root, p['repository'], p['external_id'], 'x').parent), 'files': rows, 'blocked': blocked,
+    plan = {'project_id': project_id, 'target': target, 'destination': str(folder), 'files': rows, 'blocked': blocked,
             'total_bytes': total, 'unknown_sizes': sum(r['size'] is None for r in rows), 'needs_large_confirmation': total > dl.LARGE}
+    if cfg:
+        plan.update({'staging': str(folder), 'destination': cfg.uri(cfg.prefix + folder.name + '/'), 'bucket': cfg.bucket, 'keep_local': cfg.keep_local})
+    return plan
 
 
-def download(s, project_id, file_ids, reviewer=None, confirm_large=False, background=True):
-    plan = download_plan(s, project_id, file_ids)
+def download(s, project_id, file_ids, reviewer=None, confirm_large=False, background=True, target='local'):
+    plan = download_plan(s, project_id, file_ids, target)
     if not plan['files']:
         raise ValueError('None of the selected files can be downloaded: ' + '; '.join(b['path'] + ': ' + b['reason'] for b in plan['blocked']))
     if plan['needs_large_confirmation'] and not confirm_large:
         raise ValueError(f"The selection is {plan['total_bytes'] / 1e9:.1f} GB. Confirm the large download explicitly.")
     bid = uid()
     with s.db.connect() as c:
-        c.execute('INSERT INTO download_batches(id,project_id,dest,files,total_bytes,status,reviewer,created) VALUES(?,?,?,?,?,?,?,?)',
-                  (bid, project_id, plan['destination'], len(plan['files']), plan['total_bytes'], 'queued', (reviewer or '').strip() or None, now()))
+        c.execute('INSERT INTO download_batches(id,project_id,dest,files,total_bytes,status,reviewer,created,target,remote) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                  (bid, project_id, plan.get('staging', plan['destination']), len(plan['files']), plan['total_bytes'], 'queued',
+                   (reviewer or ACTOR.get() or '').strip() or None, now(), target, plan['destination'] if target == 's3' else None))
         for f in plan['files']:
-            c.execute('INSERT INTO downloads(id,batch_id,project_id,file_id,path,url,dest,expected_size,expected_checksum,status,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-                      (uid(), bid, project_id, f['file_id'], f['path'], f['url'], f['dest'], f['size'], f['checksum'], 'queued', now()))
-        audit(c, 'repository_download_started', bid, {'project_id': project_id, 'files': len(plan['files']), 'bytes': plan['total_bytes'], 'blocked': plan['blocked']})
+            c.execute('INSERT INTO downloads(id,batch_id,project_id,file_id,path,url,dest,expected_size,expected_checksum,status,created,remote_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                      (uid(), bid, project_id, f['file_id'], f['path'], f['url'], f['dest'], f['size'], f['checksum'], 'queued', now(), f.get('remote_key')))
+        audit(c, 'repository_download_started', bid, {'project_id': project_id, 'target': target, 'destination': plan['destination'],
+                                                      'files': len(plan['files']), 'bytes': plan['total_bytes'], 'blocked': plan['blocked']})
     if background:
         submit(s, run_downloads, s, bid)
     else:
@@ -1051,34 +1110,82 @@ def run_downloads(s, bid, downloader=None):
         c.execute("UPDATE download_batches SET status='running' WHERE id=?", (bid,))
     batch = s.db.one('SELECT * FROM download_batches WHERE id=?', (bid,))
     stop = lambda: bool(s.db.one('SELECT cancel_requested FROM download_batches WHERE id=?', (bid,))['cancel_requested'])
-    for row in s.db.rows("SELECT * FROM downloads WHERE batch_id=? AND status NOT IN ('verified','size_verified') ORDER BY rowid", (bid,)):
+    to_s3 = batch.get('target') == 's3'
+    cfg = client = None
+    if to_s3:
+        try:
+            cfg = s3_config()
+            client = s3_client(s, cfg)
+        except ValueError as exc:
+            with s.db.connect() as c:
+                c.execute("UPDATE downloads SET status='failed',detail=? WHERE batch_id=? AND uploaded IS NULL", (str(exc), bid))
+        if cfg and batch.get('remote') and not batch['remote'].startswith(cfg.uri()):
+            # The bucket setting changed since this batch was planned; keep the original destination.
+            cfg = client = None
+            with s.db.connect() as c:
+                c.execute("UPDATE downloads SET status='failed',detail=? WHERE batch_id=? AND uploaded IS NULL",
+                          (f"This batch targets {batch['remote']}, but Orchard is now configured for {s3.describe().get('destination')}. Start a new transfer.", bid))
+    for row in s.db.rows('SELECT * FROM downloads WHERE batch_id=? ORDER BY rowid', (bid,)):
+        if done(row, batch) or (to_s3 and not client):
+            continue
         if stop():
             break
-        with s.db.connect() as c:
-            c.execute("UPDATE downloads SET status='running' WHERE id=?", (row['id'],))
         last = [0.0]
 
-        def progress(done, rid=row['id']):
+        def progress(n, rid=row['id'], column='bytes_done'):
             if time.monotonic() - last[0] > 0.5:
                 last[0] = time.monotonic()
                 with s.db.connect() as c:
-                    c.execute('UPDATE downloads SET bytes_done=? WHERE id=?', (done, rid))
-        try:
-            result = downloader.fetch(row['url'], row['dest'], row['expected_size'], progress, stop)
-            if result['status'] == 'cancelled':
-                with s.db.connect() as c:
-                    c.execute("UPDATE downloads SET status='cancelled',bytes_done=?,detail=? WHERE id=?", (result['bytes'], 'Cancelled; the partial file is kept for resuming.', row['id']))
-                break
-            status, detail, sha = dl.verify(row['dest'], row['expected_size'], row['expected_checksum'])
-            detail = ' '.join(result['notes'] + [detail])
-        except Exception as exc:
-            status, detail, sha = 'failed', f'{type(exc).__name__}: {exc}'[:800], None
-            result = {'bytes': 0}
+                    c.execute(f'UPDATE downloads SET {column}=? WHERE id=?', (n, rid))
+        status, detail, sha = row['status'], row['detail'], row['sha256']
+        staged = status in VERIFIED and sha and Path(row['dest']).is_file() and dl.digest(row['dest'], 'sha256') == sha
+        if not staged:
+            with s.db.connect() as c:
+                c.execute("UPDATE downloads SET status='running' WHERE id=?", (row['id'],))
+            try:
+                result = downloader.fetch(row['url'], row['dest'], row['expected_size'], progress, stop)
+                if result['status'] == 'cancelled':
+                    with s.db.connect() as c:
+                        c.execute("UPDATE downloads SET status='cancelled',bytes_done=?,detail=? WHERE id=?", (result['bytes'], 'Cancelled; the partial file is kept for resuming.', row['id']))
+                    break
+                status, detail, sha = dl.verify(row['dest'], row['expected_size'], row['expected_checksum'])
+                detail = ' '.join(result['notes'] + [detail])
+            except Exception as exc:
+                status, detail, sha = 'failed', f'{type(exc).__name__}: {exc}'[:800], None
+                result = {'bytes': 0}
+            with s.db.connect() as c:
+                c.execute('UPDATE downloads SET status=?,detail=?,sha256=?,bytes_done=?,finished=? WHERE id=?', (status, detail, sha, result['bytes'], now(), row['id']))
+        if not to_s3 or status not in VERIFIED:
+            continue
+        # Only verified bytes are uploaded; S3 checks the signed SHA-256 of every part. The row keeps its
+        # verification status throughout, so an interrupted or failed upload resumes without re-downloading.
         with s.db.connect() as c:
-            c.execute('UPDATE downloads SET status=?,detail=?,sha256=?,bytes_done=?,finished=? WHERE id=?', (status, detail, sha, result['bytes'], now(), row['id']))
+            c.execute("UPDATE downloads SET upload_detail=? WHERE id=?", (f"Uploading to {cfg.uri(row['remote_key'])}…", row['id']))
+        try:
+            project = project_row(s, row['project_id'])
+            meta = {'orchard-batch': bid, 'repository': project['repository'], 'external-id': project['external_id'], 'source-path': row['path']}
+            up = client.upload_file(row['dest'], row['remote_key'], sha, meta, cancelled=stop)
+        except Exception as exc:
+            with s.db.connect() as c:
+                c.execute('UPDATE downloads SET upload_detail=? WHERE id=?', (f'Upload failed: {type(exc).__name__}: {exc}'[:800], row['id']))
+            continue
+        if up['status'] == 'cancelled':
+            with s.db.connect() as c:
+                c.execute('UPDATE downloads SET upload_detail=? WHERE id=?', ('Upload cancelled; the verified local copy is kept for resuming.', row['id']))
+            break
+        note = (f"Already in {cfg.uri(row['remote_key'])} with the same SHA-256; not uploaded again." if up['status'] == 'already_present'
+                else f"Uploaded to {cfg.uri(row['remote_key'])} ({up['parts']} part(s)); S3 checked the SHA-256 of every part.")
+        if not cfg.keep_local:
+            try:
+                Path(row['dest']).unlink()
+                note += ' Local staging copy removed.'
+            except OSError:
+                pass
+        with s.db.connect() as c:
+            c.execute('UPDATE downloads SET uploaded=?,upload_detail=? WHERE id=?', (now(), note, row['id']))
     rows = s.db.rows('SELECT * FROM downloads WHERE batch_id=? ORDER BY rowid', (bid,))
     states = {r['status'] for r in rows}
-    status = 'cancelled' if stop() else 'completed' if states <= {'verified', 'size_verified'} else 'partial'
+    status = 'cancelled' if stop() else 'completed' if all(done(r, batch) for r in rows) else 'partial'
     project = project_row(s, batch['project_id'])
     batch = {**batch, 'finished': now()}
     data = dl.manifest(batch, project, rows)
@@ -1087,9 +1194,19 @@ def run_downloads(s, bid, downloader=None):
     except OSError as exc:
         path = None
         data['manifest_error'] = str(exc)
+    if to_s3 and client:
+        key = batch['remote'][len(cfg.uri()):] + 'orchard-manifest.json'
+        try:
+            client.put_bytes(key, json.dumps(data, indent=2, ensure_ascii=False).encode(), metadata={'orchard-batch': bid})
+            data['manifest_uri'] = cfg.uri(key)
+            path = cfg.uri(key) + (f' (local copy {path})' if path else '')
+        except Exception as exc:
+            data['manifest_error'] = f'Manifest upload failed: {type(exc).__name__}: {exc}'[:800]
+            status = 'partial'
     with s.db.connect() as c:
         c.execute('UPDATE download_batches SET status=?,finished=?,manifest=?,manifest_path=? WHERE id=?', (status, now(), dump(data), path, bid))
-        audit(c, 'repository_download_' + status, bid, {'files': len(rows), 'states': sorted(states), 'manifest': path})
+        audit(c, 'repository_download_' + status, bid, {'files': len(rows), 'states': sorted(states), 'manifest': path, 'target': batch.get('target') or 'local',
+                                                        'uploaded': sum(bool(r['uploaded']) for r in rows) if to_s3 else None})
 
 
 def download_action(s, bid, action, background=True):
@@ -1143,7 +1260,8 @@ def overview(s, limit=10):
     jobs = [job_detail(s, j['id']) for j in s.db.rows('SELECT id FROM discovery_jobs ORDER BY created DESC LIMIT ?', (limit,))]
     legacy = s.db.rows('SELECT * FROM sweep_runs ORDER BY started DESC LIMIT 20')
     return {'jobs': jobs, 'more_jobs': max(0, s.db.one('SELECT COUNT(*) n FROM discovery_jobs')['n'] - len(jobs)), 'legacy_sweeps': legacy, 'sources': list(repos.SOURCES), 'default_phrases': list(repos.DEFAULT_PHRASES),
-            'tokens': {'github': bool(repos.env('ORCHARD_GITHUB_TOKEN', 'GITHUB_TOKEN')), 'zenodo': bool(repos.env('ORCHARD_ZENODO_TOKEN')), 'dryad': bool(repos.env('ORCHARD_DRYAD_TOKEN'))},
+            'tokens': {'github': bool(repos.env('ORCHARD_GITHUB_TOKEN', 'GITHUB_TOKEN')), 'zenodo': bool(repos.env('ORCHARD_ZENODO_TOKEN')), 'dryad': bool(repos.env('ORCHARD_DRYAD_TOKEN')),
+                       's3': s3.describe().get('destination')},
             'counts': quick_counts(s)}
 
 
@@ -1303,7 +1421,7 @@ def project_detail(s, project_id):
             'current_version': decisions[0]['version'] if decisions else 0, 'criteria': s.db.one('SELECT * FROM criteria ORDER BY rowid DESC LIMIT 1'),
             'exclusion_reasons': list(EXCLUSION_REASONS), 'checklist': inv.checklist(current, docs_text, p['license'], probes),
             'downloads': [batch_detail(s, b['id']) for b in s.db.rows('SELECT id FROM download_batches WHERE project_id=? ORDER BY rowid DESC', (project_id,))],
-            'relations': relations, 'observations': observations, 'study': study, 'studies': s.db.rows('SELECT * FROM studies ORDER BY label'),
+            'storage': s3.describe(), 'relations': relations, 'observations': observations, 'study': study, 'studies': s.db.rows('SELECT * FROM studies ORDER BY label'),
             'legacy_events': s.db.rows("SELECT * FROM discovery_events WHERE project_id=? AND stage<>'human' ORDER BY rowid DESC", (project_id,))}
 
 

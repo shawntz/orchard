@@ -126,15 +126,26 @@ class Downloader:
 
 
 def manifest(batch, project, rows):
-    """Manifest written next to the files and stored in the database."""
-    return {'generated_by': 'Orchard', 'batch_id': batch['id'], 'created': batch['created'], 'finished': batch.get('finished'),
+    """Manifest written next to the files (and, for S3 transfers, into the bucket) and stored in the database."""
+    remote = batch.get('remote')
+    bucket = remote.split('/')[2] if remote else None
+    files = []
+    for r in rows:
+        item = {'path': r['path'], 'local_path': r['dest'], 'url': r['url'], 'listed_size': r['expected_size'], 'bytes': r['bytes_done'],
+                'repository_checksum': r['expected_checksum'], 'sha256': r['sha256'], 'status': r['status'], 'detail': r['detail']}
+        if remote:
+            item.update({'s3_uri': f"s3://{bucket}/{r.get('remote_key')}", 'uploaded': r.get('uploaded'), 'upload_detail': r.get('upload_detail')})
+        files.append(item)
+    data = {'generated_by': 'Orchard', 'batch_id': batch['id'], 'created': batch['created'], 'finished': batch.get('finished'),
             'project': {'repository': project['repository'], 'external_id': project['external_id'], 'url': project['url'],
                         'title': project.get('title'), 'license': project.get('license')},
-            'destination': batch['dest'],
-            'files': [{'path': r['path'], 'local_path': r['dest'], 'url': r['url'], 'listed_size': r['expected_size'], 'bytes': r['bytes_done'],
-                       'repository_checksum': r['expected_checksum'], 'sha256': r['sha256'], 'status': r['status'], 'detail': r['detail']} for r in rows],
+            'destination': remote or batch['dest'],
+            'files': files,
             'note': 'Verification confirms the bytes match the repository listing. It does not establish licence terms, '
                     'participant consent for reuse, or that the files parse correctly in eyeris.'}
+    if remote:
+        data['staging'] = batch['dest']
+    return data
 
 
 def write_manifest(dest_dir, data):
