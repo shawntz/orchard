@@ -198,8 +198,11 @@ def start(s, b, background=True):
         phrases = [p.strip() for p in phrases.splitlines() if p.strip()]
     if not isinstance(sources, list) or not sources or any(x not in repos.SOURCES for x in sources) or len(set(sources)) != len(sources):
         raise ValueError('Choose one or more of: ' + ', '.join(repos.SOURCES) + '.')
-    if not isinstance(phrases, list) or not 1 <= len(phrases) <= 20 or any(not isinstance(p, str) or not p.strip() or len(p) > 80 for p in phrases):
-        raise ValueError('Provide 1–20 search phrases of at most 80 characters.')
+    if isinstance(phrases, list):
+        phrases = [p for p in phrases if not isinstance(p, str) or p.strip()]
+    # Metadata phrases are optional: with none, only the file-index strategies run.
+    if not isinstance(phrases, list) or len(phrases) > 20 or any(not isinstance(p, str) or len(p) > 80 for p in phrases):
+        raise ValueError('Provide up to 20 search phrases of at most 80 characters.')
     if not isinstance(extensions, list) or not extensions or any(e not in ('asc', 'edf') for e in extensions):
         raise ValueError('Extensions must be asc and/or edf.')
     max_pages, max_projects = int(b.get('max_pages', 5)), int(b.get('max_projects', 100))
@@ -211,6 +214,10 @@ def start(s, b, background=True):
     plans = []
     for name in sources:
         plans += adapters(s)[name].plan(params['phrases'], tuple(extensions))
+    if not any(not st.skipped for st in plans):
+        raise ValueError('Nothing to search: without metadata phrases only file-index searches run '
+                         '(OSF file index, Zenodo file types, GitHub code search with a token for .asc). '
+                         'Add a phrase or choose another source.')
     with s.db.connect() as c:
         c.execute('INSERT INTO discovery_jobs(id,status,parameters,created,version,updated,progress) VALUES(?,?,?,?,?,?,?)',
                   (job, 'queued', dump(params), now(), 2, now(), dump({'phase': 'queued'})))
