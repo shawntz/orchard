@@ -150,6 +150,8 @@ Open a shell on the instance without SSH:
 aws ssm start-session --region "$REGION" --target "$INSTANCE"   # requires the Session Manager plugin
 ```
 
+`REGION` and `INSTANCE` exist only in the terminal where you ran the commands above. In a new terminal, run `./login` from the repository instead. It finds the running instance tagged `Name=orchard` (default region `us-west-2`; override with `REGION=…` or `NAME=…`), runs `aws login` if your credentials have expired, and opens the session. Don't re-run the block above to get the variables back: it creates a second security group, Elastic IP and instance.
+
 Run everything from here on **on the instance**.
 
 ---
@@ -514,6 +516,16 @@ In addition:
 ---
 
 ## 11. Updating Orchard
+
+To update to the latest commit on `main`, run this on the instance:
+
+```bash
+/opt/orchard/scripts/update.sh          # -y: don't ask about running jobs; --no-backup: skip the snapshot
+```
+
+It fetches first and stops if the update can't be applied cleanly (for example, files edited on the server). It also asks before interrupting queued or running jobs. It then takes an `orchard-snapshot` backup if that unit exists, stops Orchard, fast-forwards `/opt/orchard`, and starts Orchard again. If something fails after the stop, it starts Orchard on the code that is checked out. It finishes by waiting until Orchard answers on port 8765.
+
+To pin a specific release instead, do it by hand:
 
 ```bash
 sudo systemctl start orchard-snapshot                  # fresh backup first
