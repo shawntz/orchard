@@ -38,7 +38,7 @@ main() {
     exec sudo REPO="$repo" SERVICE="$service" BRANCH="$branch" DB="$db" PORT="$port" "$0" "$@"
   fi
 
-  say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
+  if [ -t 1 ]; then say() { printf '\033[1m==>\033[0m %s\n' "$*"; }; else say() { printf '==> %s\n' "$*"; }; fi
   die() { printf 'update: %s\n' "$*" >&2; exit 1; }
 
   cd "$repo" || die "no repository at $repo"
@@ -85,6 +85,7 @@ JOBS
   fi
   if [ "$active" -gt 0 ] && [ "$assume_yes" -eq 0 ]; then
     echo "$active background job(s) are queued or running. Restarting marks them 'interrupted'."
+    [ -t 0 ] || die "not restarting while jobs run; nothing changed. Re-run with -y (or the Deploy workflow with force) to restart anyway."
     read -r -p "Restart anyway? [y/N] " reply || reply=
     case "$reply" in [yY]*) ;; *) die "cancelled, nothing changed" ;; esac
   fi
@@ -98,6 +99,8 @@ JOBS
 
   # 4. Stop, update, start. From here on, always try to bring Orchard back up.
   trap 'echo "update: failed; starting Orchard again on $(git rev-parse --short HEAD)" >&2; systemctl start "$service" || true' ERR
+  local started
+  started=$(date +%s)
   say "Stopping $service"
   systemctl stop "$service"
   say "Updating to $(git rev-parse --short "$new")"
@@ -115,7 +118,10 @@ JOBS
     sleep 1
   done
 
-  journalctl -u "$service" -n 8 --no-pager --output=cat || true
+  # Startup messages only. Request lines name the signed-in user, and this output
+  # also ends up in the (public) GitHub Actions log when the Deploy workflow runs.
+  journalctl -u "$service" --since "@$started" --no-pager --output=cat 2>/dev/null |
+    grep -vE '"(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS) ' | tail -n 12 || true
   echo
   if [ "$code" = 000 ]; then
     die "Orchard did not answer on port $port after 20s. See: journalctl -u $service -n 50"
