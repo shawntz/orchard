@@ -10,10 +10,10 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from fakeweb import Reply
+from fakeweb import FakeWeb, Reply
 from repository_fixtures import ARTICLE_DOI, ASC, CLOUDFLARE, NBACK_DOI, OSF_SHELL, TITLE_CTD34, build_web
 from test_repository_discovery import Base, make_service
-from orchard import articles, discovery as D, inventory as inv, publications as P, screening
+from orchard import articles, discovery as D, inventory as inv, publications as P, repositories as R, screening
 from orchard.db import SCHEMA
 from orchard.server import make_server
 
@@ -124,7 +124,9 @@ class Publications(Inspected):
         self.assertIn('Interactions Between Visual Working Memory, Attention, and Color Categories: a Pupillometry Study', rejected)
         self.assertIn('Revealing the hidden', rejected)
         sources = [x['source'] for x in d['publication_search']['searches']]
-        self.assertEqual(sorted(set(sources)), ['Crossref', 'Europe PMC', 'OpenAlex'])
+        self.assertEqual(sorted(set(sources)), ['Crossref', 'Europe PMC', 'Europe PMC (cites the data)', 'OpenAlex', 'OpenAlex (cites the data)'])
+        cites = [x['url'] for x in d['publication_search']['searches'] if 'cites the data' in x['source']]
+        self.assertTrue(cites and all('osf.io%2Fctd34' in u for u in cites), cites)
         self.assertEqual(d['article_status'], 'no_publication')
 
     def test_explicit_repository_link_and_dataset_doi(self):
@@ -509,6 +511,67 @@ class Units(unittest.TestCase):
     def test_header_details_from_asc(self):
         details = inv.asc_details(ASC.decode())
         self.assertEqual((details['pupil'], details['sample_rate_hz'], details['eyes'], details['trial_marker']), ('AREA', 1000.0, ['LEFT', 'RIGHT'], 'TRIALID'))
+
+
+class CitingPapers(unittest.TestCase):
+    """Papers whose text cites the project's own DOI or URL (data-availability statements)."""
+    META = {'title': 'Pupil data', 'doi': '10.5281/zenodo.777', 'url': 'https://zenodo.org/records/777', 'creators': ['Alex Smith', 'Bo Lee']}
+
+    def find(self, epmc, openalex=(), meta=None, search=None):
+        web = FakeWeb()
+        web.add(r'^https://www\.ebi\.ac\.uk/europepmc/webservices/rest/search\?', search or {'hitCount': 0, 'resultList': {'result': []}})
+        web.add(r'^https://www\.ebi\.ac\.uk/europepmc/webservices/rest/search\?query=%2210', {'hitCount': len(epmc), 'resultList': {'result': list(epmc)}})
+        web.add(r'^https://api\.crossref\.org/works\?', {'message': {'items': []}})
+        web.add(r'^https://api\.openalex\.org/works\?', {'results': []})
+        web.add(r'^https://api\.openalex\.org/works\?filter=fulltext', {'results': list(openalex)})
+        lookup = P.Lookup(R.Client(web, sleeper=lambda s: None))
+        return P.find(lookup, meta or self.META, []), web
+
+    @staticmethod
+    def epmc(doi, title, authors, year=2024):
+        return {'doi': doi, 'title': title, 'authorString': authors, 'pubYear': year, 'journalTitle': 'J', 'source': 'MED'}
+
+    def test_identifiers_are_doi_and_landing_url(self):
+        self.assertEqual(P.dataset_identifiers(self.META), ['10.5281/zenodo.777', 'zenodo.org/records/777'])
+        self.assertEqual(P.dataset_identifiers({'url': 'https://osf.io/b6d8j/'}), ['osf.io/b6d8j'])
+        self.assertEqual(P.dataset_identifiers({'doi': 'doi:10.5061/dryad.x1', 'url': 'https://datadryad.org/dataset/doi:10.5061/dryad.x1'}), ['10.5061/dryad.x1'])
+        self.assertEqual(P.dataset_identifiers({}), [])
+
+    def test_citing_paper_with_shared_author_is_strong_and_skips_title_search(self):
+        found, web = self.find([self.epmc('10.1234/own', 'Surprise and the pupil', 'Smith A, Park K.')])
+        self.assertEqual([(c['doi'], c['strength']) for c in found['candidates']], [('10.1234/own', 'strong')])
+        self.assertIn("citing the project's data", found['candidates'][0]['origin'])
+        self.assertIn('smith', found['candidates'][0]['evidence'][1])
+        self.assertEqual(web.requested('crossref'), [], 'title search not needed once the data paper is found')
+        query = web.requested('europepmc')[0]
+        self.assertIn('%2210.5281%2Fzenodo.777%22+OR+%22zenodo.org%2Frecords%2F777%22', query)
+
+    def test_citing_papers_without_shared_author_are_weak_and_capped(self):
+        reuse = [self.epmc(f'10.1234/reuse{i}', f'Reanalysis number {i}', 'Other X.') for i in range(5)]
+        found, web = self.find(reuse)
+        self.assertEqual([c['strength'] for c in found['candidates']], ['weak'] * P.CITING_KEEP)
+        self.assertEqual(len([r for r in found['rejected'] if 'likely reuse' in r['reason']]), 5 - P.CITING_KEEP)
+        self.assertTrue(web.requested('crossref'), 'title search still runs when no strong paper was found')
+
+    def test_openalex_versions_peer_reviews_and_own_record_ignored(self):
+        oa = [{'doi': 'https://doi.org/10.1234/own', 'display_name': 'Surprise and the pupil', 'type': 'article', 'authorships': [{'author': {'display_name': 'Bo Lee'}}], 'publication_year': 2024},
+              {'doi': 'https://doi.org/10.1234/own.v2', 'display_name': 'Surprise and the Pupil', 'type': 'article', 'authorships': [{'author': {'display_name': 'Bo Lee'}}], 'publication_year': 2024},
+              {'doi': 'https://doi.org/10.1234/own.sa1', 'display_name': 'Reviewer #1: Surprise and the pupil', 'type': 'peer-review', 'authorships': [], 'publication_year': 2024},
+              {'doi': 'https://doi.org/10.5281/zenodo.777', 'display_name': 'Pupil data', 'type': 'article', 'authorships': [{'author': {'display_name': 'Bo Lee'}}]}]
+        found, _ = self.find([], oa)
+        self.assertEqual([(c['doi'], c['strength']) for c in found['candidates']], [('10.1234/own', 'strong')])
+
+    def test_stronger_title_match_keeps_citing_evidence(self):
+        title = {'hitCount': 1, 'resultList': {'result': [self.epmc('10.1234/x', 'Pupil data', 'Nobody Q.')]}}
+        found, _ = self.find([self.epmc('10.1234/x', 'Pupil data', 'Consortium X.')], search=title, meta={**self.META, 'creators': ['Q. Nobody']})
+        [cand] = found['candidates']
+        self.assertEqual(cand['strength'], 'strong')
+        self.assertIn('search by title and contributors', cand['origin'])
+        self.assertIn("citing the project's data", cand['origin'])
+        self.assertTrue(any('mentions this project' in e for e in cand['evidence']))
+
+    def test_europe_pmc_author_strings(self):
+        self.assertEqual(P.surnames(['Strauch C', 'van Leeuwen TM', 'Mathôt, S.', 'A. Smith']), {'strauch', 'leeuwen', 'mathot', 'smith'})
 
 
 if __name__ == '__main__':

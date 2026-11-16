@@ -63,6 +63,7 @@ When offline, you can still import documents, plan queries, import actual Europe
 - [x] PMC full-text retrieval, authorized plain-text import, contextual dataset/code/supplement candidate extraction, and explicit URL checks.
 - [x] `eyeris` reprocessing-feasibility assessment history.
 - [x] EyeLink finder: PDF download, repository-link detection, repository file listings, remote ZIP directories and `.edf`/`.asc` header checks.
+- [x] Repository discovery (OSF, Zenodo, Dryad, GitHub) with an associated-paper lookup for every inspected project, in this order: links the repository records, DOIs in its documentation, papers whose full text cites the project's DOI or URL (Europe PMC and OpenAlex, i.e. data-availability statements), and finally a title-and-author search. Citing papers that share an author are proposed as strong candidates; ones without a shared author may only reuse the data and are proposed as weak (at most three). A researcher confirms every link.
 - [x] Filtered, paginated paper library; resource inventory; complete CSV/JSON/history export.
 - [x] Optional hosted mode: proxy-authenticated usernames on every audit event (including background jobs) and screening decision; [EC2 + S3 deployment guide](docs/deploy-aws.md).
 - [x] Automated workflow tests and a GitHub Actions test configuration.
