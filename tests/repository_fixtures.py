@@ -218,6 +218,8 @@ def build_web(crossref_search=None):
     web.add(r'^https://api\.openalex\.org/works\?', {'meta': {'count': 1}, 'results': [{'doi': 'https://doi.org/10.1234/covert', 'display_name': 'Uncovering distinct drivers of covert attention', 'type': 'article',
                                                                                            'authorships': [{'author': {'display_name': 'Other Person'}}], 'publication_year': 2025}]})
     web.add(r'^https://www\.ebi\.ac\.uk/europepmc/webservices/rest/search\?', {'hitCount': 0, 'resultList': {'result': []}})
+    # Full-text searches for a project's own DOI/URL (papers citing the data): nothing unless a test adds a route.
+    web.add(r'^https://api\.openalex\.org/works\?filter=fulltext', {'meta': {'count': 0}, 'results': []})
     web.exact('https://publisher.example/oddball.pdf', ARTICLE_PDF)
     web.add(r'^https://doi\.org/', Reply(CLOUDFLARE, 403))
     return web

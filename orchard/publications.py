@@ -5,8 +5,12 @@ Order of evidence:
    OSF registration article DOIs and linked preprints, GitHub CITATION.cff preferred-citation).
 2. DOIs in the project's own documentation, classified first: a repository DOI usually
    identifies the dataset or software itself, not a paper.
-3. Only when 1-2 yield no paper: bibliographic search (Crossref, OpenAlex, Europe PMC) by title
-   and contributors. A search result becomes a candidate only with author overlap or a near-
+3. Papers that cite the uploaded data: full-text search (Europe PMC, OpenAlex) for the project's
+   own DOI and URL, the way data-availability statements point to a dataset. A citing paper that
+   shares an author with the project is strong evidence; without a shared author it may only reuse
+   the data, so it is proposed as weak (at most a few) and the rest are kept as rejected.
+4. Only when 1-3 yield no explicit or strong paper: bibliographic search (Crossref, OpenAlex,
+   Europe PMC) by title and contributors. A search result becomes a candidate only with author overlap or a near-
    identical distinctive title; shared common words ("attention", "pupil", "visual") never count.
 
 Nothing is attached automatically. Every candidate needs a researcher's confirmation, and every
@@ -52,12 +56,14 @@ def clean_title(title):
 def surnames(names):
     out = set()
     for name in names or []:
+        # Europe PMC writes "Strauch C" / "van Leeuwen TM": surname first, initials last.
+        initials_last = re.fullmatch(r"\s*\S.*\s+[A-Z]{1,3}\.?\s*", str(name or '')) and ',' not in str(name)
         name = fold(name)
         if ',' in name:
             name = name.split(',')[0]
         else:
             parts = name.split()
-            name = parts[-1] if parts else ''
+            name = (parts[-2] if initials_last else parts[-1]) if parts else ''
         name = re.sub(r'[^a-z\-]', '', name)
         if len(name) > 1:
             out.add(name)
@@ -108,6 +114,22 @@ def is_supplement(item):
     """Publishers such as APA register supplemental material as 'journal-article' records."""
     return bool(re.match(r'(?i)\s*supplement(al|ary)? (material|information|data)\b', str(item.get('title') or ''))
                 or re.search(r'(?i)\.(supp|suppl)\d*$', str(item.get('doi') or '')))
+
+
+CITING_KEEP = 3  # citing papers without a shared author proposed per project; the rest are recorded as rejected
+
+
+def dataset_identifiers(meta):
+    """Strings a paper would use to point at this project: its DOI and its landing-page URL."""
+    out = []
+    doi = normalize_doi(meta.get('doi'))
+    if doi:
+        out.append(doi)
+    url = re.sub(r'(?i)^https?://(www\.)?', '', str(meta.get('url') or '')).rstrip('/')
+    # Dryad landing pages embed the DOI; GitHub/OSF/Zenodo URLs are what papers actually print.
+    if url and '/' in url and not (doi and doi in url.lower()):
+        out.append(url)
+    return [re.sub(r'["\\]', '', i) for i in out][:3]
 
 
 def normalize_doi(value):
@@ -172,6 +194,26 @@ class Lookup:
                 results += items
             except Exception as exc:
                 log.append({'source': name, 'url': url, 'results': None, 'error': f'{type(exc).__name__}: {exc}'[:300]})
+        return results, log
+
+
+    def citing(self, identifiers):
+        """Works whose text mentions any of the identifiers (data-availability statements, references)."""
+        results, log = [], []
+        if not identifiers:
+            return results, log
+        mail = {'mailto': self.contact} if self.contact else {}
+        sources = [('Europe PMC', 'https://www.ebi.ac.uk/europepmc/webservices/rest/search?' + urlencode(
+            {'query': ' OR '.join(f'"{i}"' for i in identifiers), 'format': 'json', 'pageSize': 25, 'resultType': 'lite'}))]
+        sources += [('OpenAlex', 'https://api.openalex.org/works?' + urlencode({'filter': f'fulltext.search:"{i}"', 'per-page': 10, **mail}))
+                    for i in identifiers[:2]]
+        for name, url in sources:
+            try:
+                items = parse_search(name, self.client.json(url))
+                log.append({'source': name + ' (cites the data)', 'url': url, 'results': len(items), 'error': None})
+                results += items
+            except Exception as exc:
+                log.append({'source': name + ' (cites the data)', 'url': url, 'results': None, 'error': f'{type(exc).__name__}: {exc}'[:300]})
         return results, log
 
 
@@ -252,6 +294,9 @@ def find(lookup, meta, docs, search=True):
             current['evidence'] += [e for e in evidence if e not in current['evidence']]
             current['origin'] += '; ' + origin if origin not in current['origin'] else ''
             return
+        if current:  # stronger evidence for a paper already proposed: keep what was found before
+            evidence = evidence + [e for e in current['evidence'] if e not in evidence]
+            origin = origin + ('; ' + current['origin'] if current['origin'] not in origin else '')
         candidates[key] = {'doi': info.get('doi'), 'url': info.get('url') or (('https://doi.org/' + info['doi']) if info.get('doi') else None),
                            'title': info.get('title'), 'authors': info.get('authors') or [], 'year': info.get('year'), 'venue': info.get('venue'),
                            'kind': info.get('kind'), 'strength': strength, 'origin': origin, 'evidence': evidence, 'raw': info.get('raw') or {}}
@@ -284,8 +329,31 @@ def find(lookup, meta, docs, search=True):
             non_pubs.append({'identifier': mention['identifier'], 'kind': info['kind'], 'title': info.get('title'), 'context': mention['context'],
                              'note': 'Article DOI mentioned without citation wording or shared authors (often a method or background reference). Not proposed.'})
     searches = []
-    if search and not any(c['strength'] == 'explicit' for c in candidates.values()) and project['title']:
-        results, searches = lookup.search(project['title'], project['creators'])
+    own = normalize_doi(meta.get('doi'))
+    if search and not any(c['strength'] == 'explicit' for c in candidates.values()):
+        identifiers = dataset_identifiers(meta)
+        results, log = lookup.citing(identifiers)
+        searches += log
+        seen, unshared = set(), 0
+        for item in results:
+            keys = {item.get('doi'), re.sub(r'[^a-z0-9]+', ' ', fold(item.get('title') or '')).strip()} - {None, ''}
+            if not keys or keys & seen or item.get('kind') in ('dataset', 'other') or not item.get('title') or is_supplement(item) or (own and item.get('doi') == own):
+                continue
+            seen |= keys
+            shared = surnames(project['creators']) & surnames(item.get('authors'))
+            cited = f"Its text mentions this project's identifier ({' or '.join(identifiers)}), as a data-availability statement or reference would."
+            if shared:
+                add(item, 'strong', f"{item['source']}: paper citing the project's data", [cited, 'Shares author surname(s) with the project: ' + ', '.join(sorted(shared))])
+            elif unshared < CITING_KEEP:
+                unshared += 1
+                add(item, 'weak', f"{item['source']}: paper citing the project's data",
+                    [cited, 'No author in common with the project: it may describe the data, or only reuse them. Check before accepting.'])
+            else:
+                rejected.append({'source': item['source'], 'doi': item.get('doi'), 'title': item.get('title'), 'year': item.get('year'),
+                                 'reason': 'Cites the project\'s data but shares no author (likely reuse); more than ' + str(CITING_KEEP) + ' such papers found.'})
+    if search and not any(c['strength'] in ('explicit', 'strong') for c in candidates.values()) and project['title']:
+        results, log = lookup.search(project['title'], project['creators'])
+        searches += log
         for item in results:
             if item.get('kind') in ('dataset', 'other') or not item.get('title'):
                 continue
