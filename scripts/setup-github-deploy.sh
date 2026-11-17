@@ -29,7 +29,19 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 OIDC_ARN="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
+# The "sub" claim GitHub puts in its OIDC token. Repositories that use immutable
+# subjects get "repo:owner@<id>/name@<id>" instead of "repo:owner/name", so ask
+# GitHub for the prefix rather than assuming it.
+IFS=$'\t' read -r use_default SUB_PREFIX < <(gh api "repos/$REPO/actions/oidc/customization/sub" \
+  -q '[(.use_default | tostring), (.sub_claim_prefix // "")] | @tsv')
+if [ "$use_default" = false ]; then
+  echo "This repository uses a custom OIDC subject template; set the "sub" condition in step 3 of this script by hand." >&2
+  exit 1
+fi
+SUB="${SUB_PREFIX:-repo:$REPO}:ref:refs/heads/$BRANCH"
+
 echo "Repository $REPO ($BRANCH) -> instance Name=$NAME in $REGION"
+echo "GitHub token subject: $SUB"
 
 # 1. OIDC provider
 if aws iam get-open-id-connect-provider --open-id-connect-provider-arn "$OIDC_ARN" >/dev/null 2>&1; then
@@ -88,7 +100,7 @@ cat > "$tmp/trust.json" <<EOF
   "Action": "sts:AssumeRoleWithWebIdentity",
   "Condition": {"StringEquals": {
     "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-    "token.actions.githubusercontent.com:sub": "repo:$REPO:ref:refs/heads/$BRANCH"
+    "token.actions.githubusercontent.com:sub": "$SUB"
   }}
 }]}
 EOF
