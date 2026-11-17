@@ -525,6 +525,24 @@ To update to the latest commit on `main`, run this on the instance:
 
 It fetches first and stops if the update can't be applied cleanly (for example, files edited on the server). It also asks before interrupting queued or running jobs. It then takes an `orchard-snapshot` backup if that unit exists, stops Orchard, fast-forwards `/opt/orchard`, and starts Orchard again. If something fails after the stop, it starts Orchard on the code that is checked out. It finishes by waiting until Orchard answers on port 8765.
 
+### Deploy automatically when you merge
+
+`.github/workflows/deploy.yml` runs the same script on the instance after the **Orchard tests** workflow passes on `main`. Set it up once from your own computer (AWS CLI signed in as an admin, plus the GitHub CLI):
+
+```bash
+scripts/setup-github-deploy.sh        # REGION=… NAME=… to override us-west-2 / orchard
+```
+
+The setup script creates:
+- a GitHub OIDC provider in IAM, so no AWS keys are stored in GitHub.
+- an SSM document, `Orchard-Update`, that can only run `/opt/orchard/scripts/update.sh`.
+- a role, `orchard-github-deploy`, that only workflows on `main` can assume. It can only send that document to the instance tagged `Name=orchard`.
+- the repository variables the workflow reads. The workflow is skipped until they exist.
+
+Re-running the setup script is safe.
+
+The server still pulls the code from GitHub itself; the workflow only tells it when. If searches, scans or S3 copies are running, the deploy refuses and fails without changing anything. When they're done, re-run it from the **Actions** tab, or start it with **force** to restart anyway (`gh workflow run deploy.yml -f force=true`). Anyone who can merge into `main` can deploy, so protect that branch accordingly. In a public repository the workflow log is public. It shows commit messages, the instance ID and Orchard's startup lines, but not the account ID or request lines with usernames.
+
 To pin a specific release instead, do it by hand:
 
 ```bash

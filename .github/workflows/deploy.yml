@@ -1,0 +1,89 @@
+name: Deploy to EC2
+
+# After "Orchard tests" passes on main, run scripts/update.sh on the Orchard
+# instance through SSM Run Command. Also runnable by hand from the Actions tab.
+#
+# One-time setup: scripts/setup-github-deploy.sh (see docs/deploy-aws.md §11).
+# Skipped entirely until the AWS_DEPLOY_ROLE_ARN repository variable is set.
+#
+# Logs of a public repository are public. The instance ID and the update
+# output are printed; the AWS account ID is masked and update.sh leaves out
+# request log lines (they contain usernames).
+
+on:
+  workflow_run:
+    workflows: [Orchard tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Restart even if searches, scans or S3 copies are running (they become "interrupted")
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write   # GitHub OIDC token, exchanged for short-lived AWS credentials
+  contents: read
+
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.AWS_DEPLOY_ROLE_ARN != '' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
+      INSTANCE_NAME: ${{ vars.ORCHARD_INSTANCE_NAME || 'orchard' }}
+      FORCE: ${{ inputs.force && 'yes' || 'no' }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Run scripts/update.sh on the instance
+        run: |
+          set -euo pipefail
+
+          ids=$(aws ssm describe-instance-information \
+            --filters "Key=tag:Name,Values=$INSTANCE_NAME" "Key=PingStatus,Values=Online" \
+            --query 'InstanceInformationList[].InstanceId' --output text)
+          read -ra found <<< "$ids"
+          if [ "${#found[@]}" -ne 1 ]; then
+            echo "::error::Expected one online SSM instance tagged Name=$INSTANCE_NAME in $AWS_REGION, found ${#found[@]}."
+            exit 1
+          fi
+          instance=${found[0]}
+
+          cid=$(aws ssm send-command --instance-ids "$instance" --document-name Orchard-Update \
+            --parameters "force=$FORCE" --timeout-seconds 600 \
+            --comment "GitHub Actions run $GITHUB_RUN_ID (${GITHUB_SHA::7})" \
+            --query Command.CommandId --output text)
+          echo "SSM command $cid on $instance (force=$FORCE)"
+
+          status=Pending
+          for _ in $(seq 1 120); do
+            sleep 5
+            status=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$instance" \
+              --query Status --output text 2>/dev/null) || status=Pending
+            case "$status" in Pending|InProgress|Delayed) ;; *) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$cid" --instance-id "$instance" \
+            --query StandardOutputContent --output text
+          err=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$instance" \
+            --query StandardErrorContent --output text)
+          if [ -n "$err" ] && [ "$err" != None ]; then printf -- '--- stderr\n%s\n' "$err"; fi
+
+          if [ "$status" != Success ]; then
+            echo "::error::Update finished with status $status. If jobs were running, re-run this workflow from the Actions tab with force."
+            exit 1
+          fi
