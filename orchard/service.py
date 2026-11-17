@@ -14,7 +14,7 @@ from difflib import SequenceMatcher
 from html import unescape
 from pathlib import Path
 from urllib.parse import urlsplit
-from . import pdftext
+from . import __version__, pdftext
 from .db import ACTOR, Database, SCHEMA_VERSION, now, uid, dump, audit
 from .terms import parse_document, normalize, build_query
 from .providers import NORMALIZERS, PDF_LIMIT, PMCCloud, Transport, build_providers, is_pdf, normalize_epmc, pmcid_normalize, require_portable
@@ -1013,7 +1013,7 @@ class Service:
             eid=uid(); audit(c,'export_created',eid,{'tables':tables})
             # One read transaction for a consistent snapshot, including this export event.
             data={t:[dict(r) for r in c.execute('SELECT * FROM '+t)] for t in tables}
-        data['manifest']={'schema_version':SCHEMA_VERSION,'application_version':'0.2.0','exported_at':now(),
+        data['manifest']={'schema_version':SCHEMA_VERSION,'application_version':__version__,'exported_at':now(),
                           'counts':{'papers': sum(p['merged_into'] is None for p in data['papers']), 'source_records':len(data['source_records']), 'discovery_events':len(data['discoveries']), 'screening_events':len(data['decisions'])},
                           'study_count':None,'prisma_note':'Paper-library records and reports are tracked, but studies are not mapped for them. Repository-first counts, including mapped studies and unknowns, are in repository_funnel.',
                           'repository_funnel':repository,
