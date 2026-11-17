@@ -53,9 +53,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          # SSM rejects a tag filter combined with any other filter, so select
+          # the online instances with --query instead.
           ids=$(aws ssm describe-instance-information \
-            --filters "Key=tag:Name,Values=$INSTANCE_NAME" "Key=PingStatus,Values=Online" \
-            --query 'InstanceInformationList[].InstanceId' --output text)
+            --filters "Key=tag:Name,Values=$INSTANCE_NAME" \
+            --query "InstanceInformationList[?PingStatus=='Online'].InstanceId" --output text)
           read -ra found <<< "$ids"
           if [ "${#found[@]}" -ne 1 ]; then
             echo "::error::Expected one online SSM instance tagged Name=$INSTANCE_NAME in $AWS_REGION, found ${#found[@]}."
