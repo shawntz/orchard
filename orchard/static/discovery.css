@@ -5,11 +5,13 @@
 .d-form input[type=number]{width:90px}
 .d-job progress{width:100%;height:8px}
 .d-filters{grid-template-columns:2fr 1fr 1fr 1fr auto}
-.d-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,46%);gap:22px;align-items:start}
+#main:has(.d-layout){max-width:none}
+.d-layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:22px;align-items:start}
+#d-left{overflow-wrap:anywhere}
 .d-side{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}
 .d-reader{padding:16px}
-.d-reader-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.d-reader-controls select{flex:0 1 auto;min-width:0}
+.d-reader-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}
+.d-reader-controls select{flex:1 1 12ch;min-width:0}
 .d-reader-controls button{flex:none;margin-top:0}
 .d-reader-source{overflow-wrap:anywhere}
 #d-reader-dialog{width:calc(100% - 24px);max-width:none;max-height:calc(100dvh - 24px);padding:clamp(12px,2vw,24px)}
@@ -17,11 +19,11 @@
 #d-reader-dialog:has(.d-pdf){height:calc(100dvh - 24px)}
 #d-reader-dialog:has(.d-pdf) #d-reader-content{height:100%;display:grid;grid-template-rows:auto auto minmax(0,1fr)}
 #d-reader-dialog:has(.d-pdf) #d-reader-body{display:grid;grid-template-rows:minmax(0,1fr) auto}
-#d-reader-dialog .d-pdf{display:block;height:100%}
+#d-reader-dialog .d-pdf{height:100%}
 #d-reader-dialog .d-pdf + p{margin:8px 0 0}
 #d-reader-dialog .d-text{max-width:75ch;max-height:none;margin-inline:auto;font-size:17px;overflow:visible}
 body:has(#d-reader-dialog[open]){overflow:hidden}
-.d-pdf{width:100%;height:68vh;border:1px solid var(--line);border-radius:5px;background:#525659}
+.d-pdf{display:block;width:100%;height:68vh;border:1px solid var(--line);border-radius:5px;background:#525659}
 .d-text{max-height:68vh;white-space:pre-wrap;font:13px/1.65 Georgia,serif;background:#fbfbf7}
 .d-strip{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 14px}
 .d-steps p{margin:4px 0}
@@ -44,4 +46,4 @@ table.d-projects td{vertical-align:top;padding:8px 6px;border-bottom:1px solid #
 .d-funnel-row b{font:20px Georgia,serif}
 blockquote{margin:6px 0;padding-left:10px;border-left:2px solid var(--line)}
 #d-decision textarea{min-height:90px}
-@media (max-width:1150px){.d-layout{grid-template-columns:minmax(0,1fr)}.d-side{position:static;max-height:none}.d-form{grid-template-columns:1fr}.d-filters{grid-template-columns:1fr}}
+@media (max-width:1150px){.d-layout{grid-template-columns:minmax(0,1fr)}.d-side{position:static;max-height:none;overflow:visible}.d-form{grid-template-columns:1fr}.d-filters{grid-template-columns:1fr}}
