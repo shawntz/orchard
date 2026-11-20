@@ -17,7 +17,7 @@ const pill=(label,cls='')=>`<span class="pill ${cls}">${esc(label)}</span>`;
 const relPill=x=>x?pill(REL_LABELS[x]||x,x==='likely_relevant'?'':x==='possible_exclusion'?'bad':'warn'):pill('Not assessed','warn');
 const decPill=d=>{const x=(d&&d.decision)||'undecided';return pill(DEC_LABELS[x]||x,x==='include'?'':x==='exclude'?'bad':'warn');};
 const matchPill=x=>pill(MATCH_LABELS[x]||x,x==='eyelink_confirmed'?'':/failed|no_/.test(x)?'bad':'warn');
-const ext=url=>/^https?:\/\//i.test(url||'')?`<a class="link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`:esc(url||'');
+const ext=(url,label=url)=>/^https?:\/\//i.test(url||'')?`<a class="link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`:esc(url||'');
 const tabs=active=>`<div class="d-tabs">${[['repository-sweep','Search'],['repository-projects','Projects'],['repository-funnel','Funnel & export'],['repository-concepts','Screening concepts']].map(([h,l])=>`<a href="#${h}" class="${h===active?'active':''}">${l}</a>`).join('')}</div>`;
 
 // ---------------------------------------------------------------- search and jobs
@@ -80,7 +80,7 @@ async function projectView(id){
  const d=await api('discovery/project/'+id);
  D.project=d;D.reader=null;
  schedule(d.downloads.some(b=>['queued','running'].includes(b.status))?'project/'+id:null);
- return `<div class="topline"><a href="#repository-projects">← Repository projects</a><span>REPOSITORY PROJECT</span></div><div class="d-layout"><div id="d-left">${leftColumn(d)}</div><aside class="d-side"><section class="card d-reader" id="d-reader">${readerShell(d)}</section><section class="card" id="d-decision">${decisionPanel(d)}</section></aside></div>`;
+ return `<div class="topline"><a href="#repository-projects">← Repository projects</a><span>REPOSITORY PROJECT</span></div><div class="d-layout"><div id="d-left">${leftColumn(d)}</div><div class="d-side"><section class="card d-reader" id="d-reader">${readerShell(d)}</section><section class="card" id="d-decision">${decisionPanel(d)}</section></div></div>`;
 }
 function leftColumn(d){
  const p=d.project;
@@ -178,8 +178,31 @@ function readerItems(d){
 }
 function readerShell(d){
  const items=readerItems(d);
- return `<div class="row between"><h2>Reader</h2><select id="d-reader-select" aria-label="Document to read">${items.length?items.map(i=>`<option value="${i.kind}:${esc(i.id)}">${esc(i.label)}</option>`).join(''):'<option value="">Nothing to read yet</option>'}</select></div><div id="d-reader-body">${items.length?'':'<p class="muted">Documentation and article text appear here once read. No article is linked yet; confirm a publication or upload a PDF you obtained through your library.</p>'}</div>`;
+ return `<div id="d-reader-content">
+ <div class="row between"><h2 id="d-reader-title">Reader</h2><button type="button" class="secondary small" data-d="expand-reader" aria-haspopup="dialog" ${items.length?'':'hidden'}>Expand Reader</button><button type="button" class="secondary small" data-d="close-reader" hidden autofocus>Back to project</button></div>
+ <select id="d-reader-select" aria-label="Document to read">${readerOptions(items)}</select>
+ <div id="d-reader-body">${items.length?'':'<p class="muted">Documentation and article text appear here once read. No article is linked yet; confirm a publication or upload a PDF you obtained through your library.</p>'}</div>
+ </div><dialog id="d-reader-dialog" aria-labelledby="d-reader-title"></dialog>`;
 }
+function readerOptions(items){
+ return items.length?items.map(i=>`<option value="${i.kind}:${esc(i.id)}">${esc(i.label)}</option>`).join(''):'<option value="">Nothing to read yet</option>';
+}
+function expandReader(button){
+ const dialog=document.querySelector('#d-reader-dialog');
+ const content=document.querySelector('#d-reader-content');
+ const back=content.querySelector('[data-d="close-reader"]');
+ dialog.append(content);
+ button.hidden=true;
+ back.hidden=false;
+ dialog.addEventListener('close',()=>{
+  dialog.before(content);
+  back.hidden=true;
+  button.hidden=!content.querySelector('select').value;
+  button.focus();
+ },{once:true});
+ dialog.showModal();
+}
+
 async function openReader(kind,id){
  const body=document.querySelector('#d-reader-body');if(!body)return;
  const sel=document.querySelector('#d-reader-select');if(sel)sel.value=kind+':'+id;
@@ -189,7 +212,11 @@ async function openReader(kind,id){
   body.innerHTML=`<iframe class="d-pdf" title="Article PDF" src="${src}#view=FitH"></iframe><p><small><a href="${src}" target="_blank" rel="noopener">Open PDF in a new tab</a></small></p>`;
  }else{
   const x=kind==='text'?await api('fulltexts/'+id):await api('discovery/documents/'+id);
-  body.innerHTML=`<p><small>${esc(x.origin||x.title||'')} ${x.url?'· '+ext(x.url):''}</small></p><pre class="d-text" tabindex="0">${esc(x.content||'')}</pre>`;
+  if(!body.isConnected||D.reader!==kind+':'+id)return;
+  const publisher=x.origin?.match(/^(Publisher HTML \(extracted text\)) from (https?:\/\/\S+)$/i);
+  const origin=publisher?.[1]||x.origin||x.title||'';
+  const url=x.url||publisher?.[2];
+  body.innerHTML=`<p class="d-reader-source"><small>${esc(origin)} ${url?'· '+ext(url,'View source'):''}</small></p><pre class="d-text" tabindex="0">${esc(x.content||'')}</pre>`;
  }
 }
 function initReader(){
@@ -217,7 +244,11 @@ function refreshProject(d){
  if(dec)dec.innerHTML=decisionPanel(d);
  const sel=document.querySelector('#d-reader-select');
  const items=readerItems(d);
- if(sel){const keep=D.reader;sel.innerHTML=items.length?items.map(i=>`<option value="${i.kind}:${esc(i.id)}">${esc(i.label)}</option>`).join(''):'<option value="">Nothing to read yet</option>';if(keep)sel.value=keep;}
+ if(sel){
+  sel.innerHTML=readerOptions(items);
+  if([...sel.options].some(option=>option.value===D.reader))sel.value=D.reader;
+  document.querySelector('[data-d="expand-reader"]').hidden=!items.length||document.querySelector('#d-reader-dialog').open;
+ }
  updateSelection();
 }
 function s3Setup(st){
@@ -284,7 +315,10 @@ document.addEventListener('change',async e=>{
 });
 document.addEventListener('click',async e=>{
  const b=e.target.closest('[data-d]');if(!b)return;
- const act=b.dataset.d,id=b.dataset.id,pid=D.project&&D.project.project.id;b.disabled=true;
+ const act=b.dataset.d;
+ if(act==='expand-reader'){expandReader(b);return;}
+ if(act==='close-reader'){b.closest('dialog').close();return;}
+ const id=b.dataset.id,pid=D.project&&D.project.project.id;b.disabled=true;
  try{
   if(act==='start'){
    const name=document.querySelector('#d-reviewer').value.trim();if(name)localStorage.setItem('orchard-reviewer',name);
