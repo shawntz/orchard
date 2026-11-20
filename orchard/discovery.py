@@ -6,6 +6,7 @@ additively; nothing is deleted. A copy of the database is written before the fir
 import contextvars
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -1010,6 +1011,8 @@ def relation_action(s, relation_id, status, reviewer=None, reason=''):
 
 VERIFIED = ('verified', 'size_verified')
 TARGETS = ('local', 's3')
+PREVIEW_LINES = 50
+PREVIEW_BYTES = 64 * 1024
 
 
 def s3_config():
@@ -1234,8 +1237,43 @@ def batch_detail(s, bid):
     if not batch:
         raise KeyError('Download batch not found.')
     batch['items'] = s.db.rows('SELECT * FROM downloads WHERE batch_id=? ORDER BY rowid', (bid,))
+    for item in batch['items']:
+        item['previewable'] = (batch.get('target') in (None, 'local')
+                               and item['status'] in VERIFIED
+                               and Path(item['path'] or '').suffix.lower() == '.asc')
     batch.pop('manifest', None)
     return batch
+
+
+def download_preview(s, download_id):
+    row = s.db.one('SELECT d.path,d.dest,d.status,b.target FROM downloads d '
+                   'JOIN download_batches b ON b.id=d.batch_id WHERE d.id=?', (download_id,))
+    if not row:
+        raise KeyError('Download not found.')
+    name = Path(row['path'] or '').name
+    if Path(name).suffix.lower() != '.asc':
+        raise ValueError('This format cannot be previewed. Preview is available for .asc files.')
+    if row['target'] not in (None, 'local') or row['status'] not in VERIFIED:
+        raise ValueError('Preview is available for verified files saved to this server’s download folder.')
+    root = (s.db.path.parent / 'downloads').resolve()
+    if not row['dest']:
+        raise KeyError('The downloaded file is missing from this server.')
+    file = Path(row['dest']).resolve()
+    if root not in file.parents:
+        raise ValueError('The downloaded file is outside this server’s download folder.')
+    if not file.is_file():
+        raise KeyError('The downloaded file is missing from this server.')
+    try:
+        with file.open('rb') as stream:
+            data = stream.read(PREVIEW_BYTES)
+            more_bytes = os.fstat(stream.fileno()).st_size > len(data)
+    except FileNotFoundError:
+        raise KeyError('The downloaded file is missing from this server.') from None
+    lines = data.splitlines(keepends=True)
+    byte_limited = more_bytes and (len(lines) < PREVIEW_LINES
+                                  or (len(lines) == PREVIEW_LINES and not data.endswith((b'\n', b'\r'))))
+    return {'filename': name, 'text': b''.join(lines[:PREVIEW_LINES]).decode('utf-8', 'replace'),
+            'line_limit': PREVIEW_LINES, 'byte_limited': byte_limited}
 
 
 # --------------------------------------------------------------------------- views
