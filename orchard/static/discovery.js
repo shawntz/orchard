@@ -179,8 +179,12 @@ function readerItems(d){
 function readerShell(d){
  const items=readerItems(d);
  return `<div id="d-reader-content">
- <div class="row between"><h2 id="d-reader-title">Reader</h2><button type="button" class="secondary small" data-d="expand-reader" aria-haspopup="dialog" ${items.length?'':'hidden'}>Expand Reader</button><button type="button" class="secondary small" data-d="close-reader" hidden autofocus>Back to project</button></div>
- <select id="d-reader-select" aria-label="Document to read">${readerOptions(items)}</select>
+ <h2 id="d-reader-title">Reader</h2>
+ <div class="d-reader-controls">
+  <select id="d-reader-select" aria-label="Document to read">${readerOptions(items)}</select>
+  <button type="button" class="secondary small" data-d="expand-reader" aria-haspopup="dialog" ${items.length?'':'hidden'}>Expand Reader</button>
+  <button type="button" class="secondary small" data-d="close-reader" hidden autofocus>Back to project</button>
+ </div>
  <div id="d-reader-body">${items.length?'':'<p class="muted">Documentation and article text appear here once read. No article is linked yet; confirm a publication or upload a PDF you obtained through your library.</p>'}</div>
  </div><dialog id="d-reader-dialog" aria-labelledby="d-reader-title"></dialog>`;
 }
@@ -209,7 +213,7 @@ async function openReader(kind,id){
  D.reader=kind+':'+id;
  if(kind==='pdf'||kind==='legacy-pdf'){
   const src=kind==='pdf'?'/api/pdfs/'+encodeURIComponent(id):'/api/reader/pdf/'+encodeURIComponent(id);
-  body.innerHTML=`<iframe class="d-pdf" title="Article PDF" src="${src}#view=FitH"></iframe><p><small><a href="${src}" target="_blank" rel="noopener">Open PDF in a new tab</a></small></p>`;
+  body.innerHTML=`<iframe class="d-pdf" title="Article PDF" src="${src}#navpanes=0&view=Fit"></iframe><p><small><a href="${src}" target="_blank" rel="noopener">Open PDF in a new tab</a></small></p>`;
  }else{
   const x=kind==='text'?await api('fulltexts/'+id):await api('discovery/documents/'+id);
   if(!body.isConnected||D.reader!==kind+':'+id)return;

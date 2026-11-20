@@ -8,12 +8,17 @@
 .d-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,46%);gap:22px;align-items:start}
 .d-side{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}
 .d-reader{padding:16px}
-.d-reader select{max-width:100%}
+.d-reader-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.d-reader-controls select{flex:0 1 auto;min-width:0}
+.d-reader-controls button{flex:none;margin-top:0}
 .d-reader-source{overflow-wrap:anywhere}
-#d-reader-dialog{width:min(96vw,1050px);max-width:none;max-height:94dvh;padding:clamp(14px,3vw,30px)}
-#d-reader-dialog .row{position:sticky;top:0;background:var(--paper);padding-block:4px}
-#d-reader-dialog button{margin-top:0}
-#d-reader-dialog select{width:auto;max-width:100%}
+#d-reader-dialog{width:calc(100% - 24px);max-width:none;max-height:calc(100dvh - 24px);padding:clamp(12px,2vw,24px)}
+#d-reader-dialog .d-reader-controls{position:sticky;top:0;z-index:1;background:var(--paper)}
+#d-reader-dialog:has(.d-pdf){height:calc(100dvh - 24px)}
+#d-reader-dialog:has(.d-pdf) #d-reader-content{height:100%;display:grid;grid-template-rows:auto auto minmax(0,1fr)}
+#d-reader-dialog:has(.d-pdf) #d-reader-body{display:grid;grid-template-rows:minmax(0,1fr) auto}
+#d-reader-dialog .d-pdf{display:block;height:100%}
+#d-reader-dialog .d-pdf + p{margin:8px 0 0}
 #d-reader-dialog .d-text{max-width:75ch;max-height:none;margin-inline:auto;font-size:17px;overflow:visible}
 body:has(#d-reader-dialog[open]){overflow:hidden}
 .d-pdf{width:100%;height:68vh;border:1px solid var(--line);border-radius:5px;background:#525659}
