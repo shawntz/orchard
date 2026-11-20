@@ -174,6 +174,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/api/discovery/project/'): return self.send(200,discovery.project_detail(s,path.split('/')[-1]))
         if path.startswith('/api/discovery/jobs/'): return self.send(200,discovery.job_detail(s,path.split('/')[-1]))
         if path.startswith('/api/discovery/documents/'): return self.send(200,discovery.document(s,path.split('/')[-1]))
+        if re.fullmatch(r'/api/discovery/download-preview/[^/]+',path):
+            return self.send(200,discovery.download_preview(s,path.split('/')[-1]))
         if path.startswith('/api/discovery/downloads/'): return self.send(200,discovery.batch_detail(s,path.split('/')[-1]))
         if path=='/api/discovery/config': return self.send(200,discovery.config_view(s))
         if path=='/api/discovery/funnel': return self.send(200,discovery.funnel(s))

@@ -41,6 +41,49 @@ class Hosted(unittest.TestCase):
         self.assertEqual(self.status('overview',headers={'Host':'attacker.example'}),403)
         self.assertEqual(self.status('documents',{'name':'x','text':'pupil'},headers={'Origin':'https://evil.example'}),403)
 
+    def test_download_preview_returns_only_a_bounded_excerpt(self):
+        relative = 'Data/ASC/sub_1.asc'
+        file = self.path.parent / 'downloads' / 'osf_9uyzf' / relative
+        file.parent.mkdir(parents=True)
+        lines = ''.join(f'MSG {i} <sample>\r\n' for i in range(1, 51))
+        with file.open('wb') as f:
+            f.write((lines + 'line 51\n').encode())
+            f.truncate(91_600_000)
+        with self.s.db.connect() as c:
+            c.execute("INSERT INTO download_batches (id,project_id,dest,status,created) "
+                      "VALUES ('batch','project',?,'completed','now')", (str(file.parent),))
+            c.execute("INSERT INTO downloads (id,batch_id,project_id,path,dest,status,created) "
+                      "VALUES ('item','batch','project',?,?,'verified','now')", (relative, str(file)))
+        endpoint = 'discovery/download-preview/item'
+        self.assertTrue(self.call('discovery/downloads/batch')['items'][0]['previewable'])
+        self.assertEqual(self.status(endpoint, user=None), 401)
+        self.assertEqual(self.status(endpoint, headers={'Origin': 'https://evil.example'}), 403)
+        request = urllib.request.Request(self.base + endpoint, headers={'X-Remote-User': 'alice'})
+        with urllib.request.urlopen(request) as response:
+            self.assertIsNone(response.headers.get('Content-Disposition'))
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
+            self.assertLess(int(response.headers['Content-Length']), 2_000)
+            self.assertEqual(json.load(response), {'filename': 'sub_1.asc', 'text': lines,
+                                                  'line_limit': 50, 'byte_limited': False})
+
+        file.write_bytes(b'x' * (discovery.PREVIEW_BYTES + 1))
+        preview = self.call(endpoint)
+        self.assertEqual(preview['text'], 'x' * discovery.PREVIEW_BYTES)
+        self.assertTrue(preview['byte_limited'])
+        with self.s.db.connect() as c:
+            c.execute("UPDATE download_batches SET target='s3' WHERE id='batch'")
+        self.assertFalse(self.call('discovery/downloads/batch')['items'][0]['previewable'])
+        self.assertEqual(self.status(endpoint), 400)
+        with self.s.db.connect() as c:
+            c.execute("UPDATE download_batches SET target='local' WHERE id='batch'")
+            c.execute("UPDATE downloads SET path='recording.edf' WHERE id='item'")
+        self.assertFalse(self.call('discovery/downloads/batch')['items'][0]['previewable'])
+        self.assertEqual(self.status(endpoint), 400)
+        with self.s.db.connect() as c:
+            c.execute("UPDATE downloads SET path=? WHERE id='item'", (relative,))
+        file.unlink()
+        self.assertEqual(self.status(endpoint), 404)
+
     def test_actions_attributed_by_username(self):
         doc=self.call('documents',{'name':'terms','text':'pupillometry\nmemory'},user='alice')
         self.call('criteria',{'inclusion':'Pupil study','exclusion':'None'},user='bob')
