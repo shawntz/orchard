@@ -8,7 +8,14 @@
 .d-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,46%);gap:22px;align-items:start}
 .d-side{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}
 .d-reader{padding:16px}
-.d-reader select{max-width:62%}
+.d-reader select{max-width:100%}
+.d-reader-source{overflow-wrap:anywhere}
+#d-reader-dialog{width:min(96vw,1050px);max-width:none;max-height:94dvh;padding:clamp(14px,3vw,30px)}
+#d-reader-dialog .row{position:sticky;top:0;background:var(--paper);padding-block:4px}
+#d-reader-dialog button{margin-top:0}
+#d-reader-dialog select{width:auto;max-width:100%}
+#d-reader-dialog .d-text{max-width:75ch;max-height:none;margin-inline:auto;font-size:17px;overflow:visible}
+body:has(#d-reader-dialog[open]){overflow:hidden}
 .d-pdf{width:100%;height:68vh;border:1px solid var(--line);border-radius:5px;background:#525659}
 .d-text{max-height:68vh;white-space:pre-wrap;font:13px/1.65 Georgia,serif;background:#fbfbf7}
 .d-strip{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 14px}
@@ -25,10 +32,11 @@ table.d-projects td{vertical-align:top;padding:8px 6px;border-bottom:1px solid #
 .d-passage p{margin:4px 0;font-size:13px;line-height:1.6}
 .d-passage mark{background:#e3edd3;padding:0 2px}
 .d-candidate,.d-paper{border:1px solid var(--line);border-radius:7px;padding:12px 14px;margin:10px 0}
+.d-paper{overflow-wrap:anywhere}
 .d-paper.removed{opacity:.6}
 .d-candidate ul{margin:6px 0 8px;padding-left:18px}
 .d-funnel-row{display:grid;grid-template-columns:minmax(0,2fr) 90px minmax(0,3fr);gap:12px;padding:8px 0;border-top:1px solid var(--line);align-items:baseline}
 .d-funnel-row b{font:20px Georgia,serif}
 blockquote{margin:6px 0;padding-left:10px;border-left:2px solid var(--line)}
 #d-decision textarea{min-height:90px}
-@media (max-width:1150px){.d-layout{grid-template-columns:1fr}.d-side{position:static;max-height:none}.d-form{grid-template-columns:1fr}.d-filters{grid-template-columns:1fr}}
+@media (max-width:1150px){.d-layout{grid-template-columns:minmax(0,1fr)}.d-side{position:static;max-height:none}.d-form{grid-template-columns:1fr}.d-filters{grid-template-columns:1fr}}
